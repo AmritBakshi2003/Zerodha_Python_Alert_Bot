@@ -170,7 +170,7 @@ class Engine:
         previous_side, previous_ts = self._store.last_alert(alert.symbol)
         if previous_side is None or previous_ts is None:
             return True
-        gap_minutes = (alert.ts - previous_ts).total_seconds() / 60.0
+        gap_minutes = float((alert.ts - previous_ts).total_seconds()) / 60.0
         if previous_side != alert.side.value:
             return gap_minutes >= params.min_side_flip_minutes
         return gap_minutes >= params.cooldown_minutes

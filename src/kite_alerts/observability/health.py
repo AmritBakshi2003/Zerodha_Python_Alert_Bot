@@ -7,6 +7,7 @@ supervisor or uptime monitor can act on it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
@@ -83,10 +84,8 @@ class HealthServer:
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
-                try:
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):  # pragma: no cover
                     self.wfile.write(body)
-                except (BrokenPipeError, ConnectionResetError):  # pragma: no cover
-                    pass
 
             def log_message(self, fmt: str, *args: Any) -> None:
                 log.debug("http: " + fmt, *args)

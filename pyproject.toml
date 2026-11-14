@@ -61,6 +61,8 @@ packages = ["src/kite_alerts"]
 line-length = 100
 target-version = "py310"
 src = ["src", "tests"]
+# legacy/ is the superseded prototype: reference only, not shipped, not linted.
+exclude = ["legacy"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C4", "PT"]
@@ -120,7 +122,7 @@ disallow_untyped_defs = true
 disallow_any_unimported = false
 
 [[tool.mypy.overrides]]
-module = ["kiteconnect.*", "dotenv.*", "yaml.*"]
+module = ["kiteconnect.*", "dotenv.*", "yaml.*", "pandas"]
 ignore_missing_imports = true
 
 # --------------------------------------------------------------------------- #
@@ -149,6 +151,8 @@ omit = ["src/kite_alerts/cli/login_cmd.py"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
+# The gates are worthless if a refactor can drop coverage silently.
+fail_under = 85
 exclude_also = [
   "if TYPE_CHECKING:",
   "raise NotImplementedError",

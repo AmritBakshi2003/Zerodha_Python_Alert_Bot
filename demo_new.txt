@@ -1,5 +1,0 @@
-🔴 SELL DEMO:FUT @ 99.83 [09:34] — RSI 40.9 in bearish zone; MACD below signal, histogram falling; ORB breakdown below 99.89; OI +0.67% with price down (short buildup)
-🔴 SELL DEMO:FUT @ 99.42 [09:49] — RSI 29.8 in bearish zone; MACD below signal, histogram falling; ORB breakdown below 99.89; OI +0.81% with price down (short buildup)
-🟢 BUY DEMO:FUT @ 100.02 [10:07] — EMA9 crossed above EMA21; RSI 72.1 in bullish zone; MACD above signal, histogram rising; OI +1.11% with price up (long buildup)
-
-3 alert(s) fired; sides: ['SELL', 'SELL', 'BUY']  (no orders placed)

@@ -22,7 +22,6 @@ from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, model_validator
 
 from ..core.calendar import SessionWindow
-from ..core.clock import IST_ZONE
 from ..core.errors import ConfigError
 from .defaults import RULE_ENV_PREFIX, RULE_IDS, SESSION_MINUTES
 
@@ -158,7 +157,8 @@ class StrategyParams(BaseModel):
             )
         if self.rsi_sell_min >= self.rsi_sell_max:
             problems.append(
-                f"RSI_SELL_MIN ({self.rsi_sell_min}) must be below RSI_SELL_MAX ({self.rsi_sell_max})"
+                f"RSI_SELL_MIN ({self.rsi_sell_min}) must be below "
+                f"RSI_SELL_MAX ({self.rsi_sell_max})"
             )
         if self.rsi_sell_max >= self.rsi_buy_min:
             problems.append(
@@ -380,7 +380,6 @@ class Settings(BaseModel):
     db_path: Path = Path("data/kite_alerts.db")
     cache_dir: Path = Path("cache")
     warmup_days: int = Field(4, ge=1, le=60)
-    timezone: str = IST_ZONE
     env_warnings: tuple[str, ...] = ()
 
     @model_validator(mode="after")
@@ -569,7 +568,6 @@ def _build(env: _Env) -> dict[str, Any]:
         "db_path": env.path("DB_PATH", "data/kite_alerts.db") or Path("data/kite_alerts.db"),
         "cache_dir": env.path("CACHE_DIR", "cache") or Path("cache"),
         "warmup_days": env.integer("WARMUP_DAYS", 4),
-        "timezone": env.text("TIMEZONE", IST_ZONE),
     }
 
 

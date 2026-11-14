@@ -9,6 +9,7 @@ name and a redacted detail, because notifier errors end up in logs and the DLQ.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -109,10 +110,8 @@ class BaseNotifier(ABC):
 
     def close(self) -> None:
         if self._owns_session:
-            try:
+            with contextlib.suppress(Exception):  # pragma: no cover - shutdown path
                 self._session.close()
-            except Exception:  # pragma: no cover - shutdown path
-                pass
 
     @abstractmethod
     def send(self, message: Message) -> None:

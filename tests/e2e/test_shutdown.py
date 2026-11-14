@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pandas as pd
 import pytest
 
@@ -27,7 +29,7 @@ def test_shutdown_flushes_and_closes_everything(tmp_path) -> None:
         assert any("stopping (test)" in text for text in harness.notifier.texts)
 
         # The store is closed: further writes fail loudly instead of silently.
-        with pytest.raises(Exception):
+        with pytest.raises(sqlite3.ProgrammingError):
             harness.runtime.store.count_alerts()
     finally:
         if harness.runtime.started:

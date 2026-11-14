@@ -7,9 +7,11 @@ secrets/
 secrets/*
 
 # --- runtime state -----------------------------------------------------------
-logs/
-cache/
-data/
+# Anchored on purpose: an unanchored `data/` also matches src/kite_alerts/data/,
+# which is a source package and must never be ignored by git again.
+/logs/
+/cache/
+/data/
 *.db
 *.db-wal
 *.db-shm

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
@@ -126,5 +127,5 @@ def test_sqlite_store_context_manager_closes(tmp_path: Path) -> None:
     path = tmp_path / "alerts.db"
     store = SqliteAlertStore(path)
     store.close()
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.ProgrammingError):
         store.record_alert(make_alert())

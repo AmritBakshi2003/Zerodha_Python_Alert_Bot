@@ -111,4 +111,4 @@ class FrozenClock:
 
 def format_hhmm(value: dt.datetime | pd.Timestamp) -> str:
     """``HH:MM`` in IST, regardless of host timezone."""
-    return to_ist_ts(value).strftime("%H:%M")
+    return str(to_ist_ts(value).strftime("%H:%M"))

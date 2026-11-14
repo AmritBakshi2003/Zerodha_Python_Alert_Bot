@@ -14,6 +14,7 @@ import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -180,7 +181,11 @@ def build_report(
     ]
     if params is not None:
         lines.append(
-            f"params: min_agree={params.min_agree} cooldown={params.cooldown_minutes}m ema={params.ema_fast}/{params.ema_slow} rsi={params.rsi_period} orb={params.orb_minutes}m seed={params.indicator_seed}"
+            f"params: min_agree={params.min_agree} "
+            f"cooldown={params.cooldown_minutes}m "
+            f"ema={params.ema_fast}/{params.ema_slow} "
+            f"rsi={params.rsi_period} orb={params.orb_minutes}m "
+            f"seed={params.indicator_seed}"
         )
     lines.append("")
     header = f"{'time':<17}{'side':<6}{'price':>10}" + "".join(

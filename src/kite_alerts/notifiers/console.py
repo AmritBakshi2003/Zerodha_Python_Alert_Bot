@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from typing import IO
 
@@ -20,10 +21,8 @@ def ensure_utf8_stream(stream: IO[str] | None = None, *, newline: str | None = N
     target = stream if stream is not None else sys.stdout
     reconfigure = getattr(target, "reconfigure", None)
     if callable(reconfigure):
-        try:
+        with contextlib.suppress(ValueError, OSError):  # pragma: no cover - consumed stream
             reconfigure(encoding="utf-8", errors="replace", newline=newline)
-        except (ValueError, OSError):  # pragma: no cover - already consumed stream
-            pass
     return target
 
 

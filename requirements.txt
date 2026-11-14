@@ -1,5 +1,11 @@
-kiteconnect>=5.0.1
-pandas>=2.0
-numpy>=1.24
+# Convenience mirror of [project.dependencies] for `pip install -r requirements.txt`.
+# The canonical install is `pip install -e ".[dev]"` (see README); this file exists
+# for environments that only support a flat requirements file.
+kiteconnect>=5.0.1,<6
+pandas>=2.0,<3
+numpy>=1.24,<2.5
+pydantic>=2.5,<3
 python-dotenv>=1.0
+PyYAML>=6.0
 requests>=2.31
+tzdata>=2024.1
