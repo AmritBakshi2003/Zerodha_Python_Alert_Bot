@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Kite Alerts — dashboard</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/vendor/lightweight-charts/lightweight-charts.standalone.production.js" defer></script>
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <div>
+          <h1>Kite Alerts</h1>
+          <p class="tagline">
+            Alert dashboard. <strong>Alerts only — it never places orders.</strong>
+          </p>
+        </div>
+        <nav aria-label="Sections">
+          <ul class="nav-list">
+            <li><a href="#dashboard">Dashboard</a></li>
+            <li><a href="#demo">Demo player</a></li>
+            <li><a href="#history">Alert history</a></li>
+            <li><a href="#test-alert">Test alert</a></li>
+            <li><a href="#help">Help</a></li>
+          </ul>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main" class="wrap">
+      <section id="dashboard" class="panel" aria-labelledby="dashboard-title">
+        <div class="panel-head">
+          <h2 id="dashboard-title">Dashboard</h2>
+          <p class="panel-note">Refreshes every few seconds while this page is open.</p>
+        </div>
+
+        <div class="status-grid">
+          <article class="card status-card" id="status-card">
+            <p class="status-dot" id="bot-status-dot" data-state="stopped" aria-hidden="true"></p>
+            <div aria-live="polite">
+              <h3 id="bot-status-label">Checking…</h3>
+              <p class="muted" id="bot-status-detail">Looking for the bot's health check.</p>
+              <p class="small muted" id="bot-status-checked"></p>
+            </div>
+            <button type="button" id="status-refresh" class="button button-quiet">Refresh status</button>
+          </article>
+
+          <article class="card counts-card">
+            <h3>Today's alerts</h3>
+            <p class="counts">
+              <span class="count count-buy"><span id="count-buys">0</span>
+                <span class="count-label">buys</span></span>
+              <span class="count count-sell"><span id="count-sells">0</span>
+                <span class="count-label">sells</span></span>
+            </p>
+            <p class="small muted" id="counts-date"></p>
+          </article>
+        </div>
+
+        <h3 class="subhead">Latest alerts</h3>
+        <p class="muted" id="feed-empty">No alerts yet. Try the demo player.</p>
+        <ul class="alert-feed" id="alert-feed" aria-live="polite" aria-label="Latest alerts"></ul>
+      </section>
+
+      <section id="demo" class="panel" aria-labelledby="demo-title">
+        <div class="panel-head">
+          <h2 id="demo-title">Demo player <span class="badge badge-demo">DEMO</span></h2>
+          <p class="panel-note">
+            A practice day replayed through the same alert engine as the live bot.
+            No account, no internet, and nothing is saved to your alert history.
+          </p>
+        </div>
+
+        <div class="demo-controls" role="group" aria-label="Demo playback controls">
+          <button type="button" id="demo-play" class="button">Play</button>
+          <button type="button" id="demo-pause" class="button button-quiet" disabled>Pause</button>
+          <button type="button" id="demo-reset" class="button button-quiet">Reset</button>
+          <label class="field-inline" for="demo-speed">Speed
+            <select id="demo-speed">
+              <option value="1">1x</option>
+              <option value="5" selected>5x</option>
+              <option value="20">20x</option>
+              <option value="60">60x</option>
+            </select>
+          </label>
+          <span class="progress" id="demo-progress">Loading…</span>
+        </div>
+
+        <ul class="legend" aria-label="Chart legend">
+          <li><span class="swatch swatch-ema-fast" aria-hidden="true"></span>EMA 9</li>
+          <li><span class="swatch swatch-ema-slow" aria-hidden="true"></span>EMA 21</li>
+          <li><span class="swatch swatch-orb" aria-hidden="true"></span>Opening-range band</li>
+          <li><span class="swatch swatch-rsi" aria-hidden="true"></span>RSI panel</li>
+          <li><span class="swatch swatch-macd" aria-hidden="true"></span>MACD panel</li>
+        </ul>
+
+        <div class="chart" id="chart" role="img"
+             aria-label="Candlestick chart of the demo day with two EMA lines, an opening-range band, a BUY/SELL marker on each alert candle, an RSI panel and a MACD panel."></div>
+        <p class="small muted">Chart times are IST. A BUY or SELL marker sits on the exact candle that fired the alert.</p>
+
+        <h3 class="subhead">Alerts in this replay <span id="demo-counts" class="muted small"></span></h3>
+        <div id="demo-alerts" class="demo-alerts" aria-live="polite"></div>
+        <p id="demo-summary" class="demo-summary" role="status"></p>
+      </section>
+
+      <section id="history" class="panel" aria-labelledby="history-title">
+        <div class="panel-head">
+          <h2 id="history-title">Alert history</h2>
+          <p class="panel-note">
+            Read straight from the bot's alert database, opened read-only.
+            The dashboard can never change it.
+          </p>
+        </div>
+
+        <div class="filters">
+          <label for="history-symbol">Symbol
+            <select id="history-symbol">
+              <option value="">All symbols</option>
+            </select>
+          </label>
+          <label for="history-side">Side
+            <select id="history-side">
+              <option value="">All sides</option>
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+            </select>
+          </label>
+          <button type="button" id="history-refresh" class="button button-quiet">Refresh</button>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <caption>Alerts recorded by the bot, newest first</caption>
+            <thead>
+              <tr>
+                <th scope="col">Time (IST)</th>
+                <th scope="col">Symbol</th>
+                <th scope="col">Side</th>
+                <th scope="col">Price</th>
+                <th scope="col">Alert</th>
+              </tr>
+            </thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
+        <p class="muted" id="history-empty">No alerts yet. Try the demo player.</p>
+
+        <div class="pager">
+          <button type="button" id="history-prev" class="button button-quiet" disabled>Previous</button>
+          <span id="history-page" class="muted small"></span>
+          <button type="button" id="history-next" class="button button-quiet" disabled>Next</button>
+        </div>
+      </section>
+
+      <section id="test-alert" class="panel" aria-labelledby="test-alert-title">
+        <div class="panel-head">
+          <h2 id="test-alert-title">Test alert</h2>
+          <p class="panel-note">
+            Send a clearly labelled TEST message through the channels set in your
+            <code>.env</code>. Test messages are never recorded as real alerts.
+          </p>
+        </div>
+        <button type="button" id="test-alert-button" class="button">Send test alert</button>
+        <p id="test-alert-status" class="test-status" role="status"></p>
+        <ul id="test-alert-results" class="channel-results" aria-label="Per-channel results"></ul>
+        <ul id="test-alert-setup" class="setup-hints" aria-label="How to add another channel"></ul>
+        <p class="small muted">Limited to one test every 10 seconds.</p>
+      </section>
+
+      <section id="help" class="panel" aria-labelledby="help-title">
+        <div class="panel-head">
+          <h2 id="help-title">Help &amp; about</h2>
+          <p class="panel-note">What this tool is, and what to do on your first day.</p>
+        </div>
+
+        <dl class="about-list">
+          <dt>Version</dt>
+          <dd id="about-version">…</dd>
+          <dt>Mode</dt>
+          <dd id="about-mode">…</dd>
+        </dl>
+
+        <p id="about-alerts-only" class="alerts-only">
+          This tool only sends alerts. It never places, modifies or cancels orders.
+        </p>
+        <p id="about-settings-warning" class="warning" hidden></p>
+
+        <h3>Your first day</h3>
+        <ol id="about-checklist" class="checklist">
+          <li>Copy <code>.env.example</code> to <code>.env</code> and fill in your Kite keys.</li>
+          <li>Run <code>kite-alerts config-check</code> to confirm the settings are valid.</li>
+          <li>Run <code>kite-alerts login</code> each morning — the token expires around 06:00 IST.</li>
+          <li>Run <code>kite-alerts run</code> in its own window to start the alerts.</li>
+          <li>Try the demo player on this page first: it needs no account and no internet.</li>
+        </ol>
+
+        <p class="small muted">
+          This dashboard is served entirely from this computer. No CDN, no external fonts,
+          no analytics and no telemetry.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <p class="attribution">
+          Charts by <a href="https://www.tradingview.com/" rel="noopener noreferrer">TradingView
+          Lightweight Charts™</a>. Copyright (с) 2025 TradingView, Inc.
+          <a href="https://www.tradingview.com/" rel="noopener noreferrer">https://www.tradingview.com/</a>.
+          Licensed under the <a href="/license">Apache License, Version 2.0</a>; the
+          <a href="/notice">attribution notice</a> is included with the vendored library.
+        </p>
+        <p class="small muted">kite-alerts is alerts-only software. Not investment advice.</p>
+      </div>
+    </footer>
+  </body>
+</html>

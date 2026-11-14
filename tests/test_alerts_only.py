@@ -45,6 +45,22 @@ def package_files() -> list[Path]:
     return sorted(root.rglob("*.py"))
 
 
+#: Everything the dashboard can ship to a browser. The guard must see it too: an
+#: order API referenced from JavaScript is just as forbidden as one in Python.
+_UI_ASSET_SUFFIXES = {".py", ".js", ".mjs", ".html", ".css", ".json"}
+
+
+def ui_asset_files() -> list[Path]:
+    root = Path(kite_alerts.__file__).parent / "ui"
+    if not root.is_dir():
+        return []
+    return sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in _UI_ASSET_SUFFIXES
+    )
+
+
 def test_package_has_files() -> None:
     assert len(package_files()) > 20
 
@@ -59,14 +75,37 @@ def test_no_order_method_reference(name: str) -> None:
     assert not offenders, f"order API {name!r} referenced in: {offenders}"
 
 
+def test_ui_assets_are_scanned() -> None:
+    """The dashboard's static files exist and are included in the order-API scan."""
+    suffixes = {path.suffix.lower() for path in ui_asset_files()}
+    assert {".js", ".html", ".css"} <= suffixes
+
+
+@pytest.mark.parametrize("name", _FORBIDDEN)
+def test_ui_never_references_an_order_api(name: str) -> None:
+    offenders = [
+        str(path.relative_to(Path(kite_alerts.__file__).parent))
+        for path in ui_asset_files()
+        if name in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"order API {name!r} referenced by the UI: {offenders}"
+
+
 def test_no_order_endpoint_strings() -> None:
     offenders: list[str] = []
-    for path in package_files():
+    for path in [*package_files(), *ui_asset_files()]:
         text = path.read_text(encoding="utf-8")
         for hint in _ORDER_ENDPOINT_HINTS:
             if hint in text:
                 offenders.append(f"{path.name}: {hint}")
     assert not offenders, f"order endpoint referenced in: {offenders}"
+
+
+def test_ui_declares_alerts_only() -> None:
+    """The page the customer sees must state the hard constraint."""
+    index = Path(kite_alerts.__file__).parent / "ui" / "static" / "index.html"
+    text = index.read_text(encoding="utf-8").lower()
+    assert "never places orders" in text
 
 
 def test_only_market_data_kite_methods_are_used() -> None:
