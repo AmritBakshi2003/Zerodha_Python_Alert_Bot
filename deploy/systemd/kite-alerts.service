@@ -1,0 +1,53 @@
+[Unit]
+Description=kite-alerts - Zerodha Kite Connect trade alerts (alerts only, never places orders)
+Documentation=https://github.com/AmritBakshi2003/Zerodha_Python_Alert_Bot
+# The bot needs the network before the websocket can connect.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kite-alerts
+Group=kite-alerts
+# A plain venv install; no Docker, no containers.
+WorkingDirectory=/opt/kite-alerts
+# The full environment (credentials, symbols, thresholds). Keep it 0640
+# root:kite-alerts - see deploy/README.md.
+EnvironmentFile=/etc/kite-alerts/kite-alerts.env
+ExecStart=/opt/kite-alerts/.venv/bin/kite-alerts run
+
+# Exit 2 (configuration) and 3 (missing or expired token) are not transient:
+# restarting would spin all morning against the same broken .env or dead token.
+# Stop, and let the operator fix .env or run `kite-alerts login`.
+Restart=on-failure
+RestartPreventExitStatus=2 3
+RestartSec=30
+
+# SIGINT is what the app traps for a graceful shutdown (worker, feed, notifier
+# hub and SQLite all close in order), so send it rather than SIGTERM.
+KillSignal=SIGINT
+TimeoutStopSec=45
+
+# --- hardening --------------------------------------------------------------
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+UMask=0077
+# ProtectSystem=strict makes the filesystem read-only except for these paths.
+ReadWritePaths=/opt/kite-alerts/data /opt/kite-alerts/logs /opt/kite-alerts/cache
+
+[Install]
+WantedBy=multi-user.target

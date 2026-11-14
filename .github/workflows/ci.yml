@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, so a dependency release that breaks us surfaces on a quiet Monday
+  # rather than on a live trading morning. 03:00 UTC = 08:30 IST.
+  schedule:
+    - cron: "0 3 * * 1"
 
 # Least privilege: no job writes anything, and no secrets are referenced.
 permissions:
@@ -169,3 +173,77 @@ jobs:
 
       - name: The package must never reference an order API
         run: pytest tests/test_alerts_only.py -q
+
+  # ---------------------------------------------------------------------------
+  # 5. Windows parity. The owner runs the bot on a Windows PC, so the suite, the
+  #    golden demo output and the PowerShell helpers are exercised there too.
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows (Python 3.12)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: pytest (coverage gate)
+        run: pytest --cov=kite_alerts --cov-report=xml
+
+      - name: Demo via CLI matches demo_output.txt
+        run: python scripts/check_demo_golden.py -- kite-alerts demo
+
+      - name: Demo via module matches demo_output.txt
+        run: python scripts/check_demo_golden.py -- python -m kite_alerts.demo
+
+      - name: Parse every PowerShell script
+        shell: pwsh
+        run: |
+          $failed = $false
+          $scripts = Get-ChildItem -Path 'scripts' -Recurse -Filter '*.ps1'
+          if (-not $scripts) { Write-Host '::error::no .ps1 scripts found'; exit 1 }
+          foreach ($file in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $file.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              $failed = $true
+              Write-Host "::error file=$($file.FullName)::$($errors[0].Message)"
+              foreach ($e in $errors) {
+                Write-Host "    line $($e.Extent.StartLineNumber): $($e.Message)"
+              }
+            } else {
+              Write-Host "parsed OK: $($file.Name)"
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: PSScriptAnalyzer (when available)
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
+            try {
+              Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction Stop
+            } catch {
+              Write-Host "PSScriptAnalyzer unavailable in this image; skipping ($_)"
+              exit 0
+            }
+          }
+          Import-Module PSScriptAnalyzer
+          # Write-Host is right for a console supervisor and the scripts are not a
+          # reusable module, so PSAvoidUsingWriteHost would only add noise.
+          $results = Invoke-ScriptAnalyzer -Path 'scripts' -Recurse -Severity Error, Warning `
+            -ExcludeRule PSAvoidUsingWriteHost
+          if ($results) {
+            $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+            exit 1
+          }
+          Write-Host 'PSScriptAnalyzer: no errors or warnings'

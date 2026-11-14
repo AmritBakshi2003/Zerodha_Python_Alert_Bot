@@ -1,0 +1,41 @@
+version: 2
+
+updates:
+  # Runtime and development dependencies from pyproject.toml.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      # pyproject.toml pins pandas and numpy to a mutually compatible window, so
+      # they must move together rather than in two independent PRs.
+      pandas-numpy:
+        patterns:
+          - "pandas"
+          - "numpy"
+      dev-tooling:
+        patterns:
+          - "pytest*"
+          - "ruff"
+          - "black"
+          - "mypy"
+          - "hypothesis"
+          - "pre-commit"
+
+  # Pinned GitHub Actions used by ci.yml and release.yml.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
