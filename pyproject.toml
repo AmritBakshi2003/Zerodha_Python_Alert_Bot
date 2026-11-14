@@ -1,0 +1,160 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kite-alerts"
+version = "1.0.0"
+description = "Production-grade Zerodha Kite Connect trade-ALERT bot. Alerts only: it never places, modifies or cancels orders."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Kite Alerts" }]
+keywords = ["zerodha", "kiteconnect", "alerts", "trading", "signals"]
+classifiers = [
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+
+dependencies = [
+  "kiteconnect>=5.0.1,<6",
+  "pandas>=2.0,<3",
+  # numpy 2.5 deprecates generic timedelta units, which pandas 2.3.x still uses
+  # internally (``pd.Timedelta(minutes=1)`` warns). Pin below it until pandas
+  # releases support; otherwise every timestamp operation warns.
+  "numpy>=1.24,<2.5",
+  "pydantic>=2.5,<3",
+  "python-dotenv>=1.0",
+  "PyYAML>=6.0",
+  "requests>=2.31",
+  "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "hypothesis>=6.100",
+  "ruff>=0.5",
+  "black>=24.4",
+  "mypy>=1.10",
+  "types-PyYAML",
+  "types-requests",
+  "pre-commit>=3.7",
+]
+
+[project.scripts]
+kite-alerts = "kite_alerts.cli.main:main"
+
+[project.urls]
+Documentation = "https://github.com/example/kite-alerts#readme"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kite_alerts"]
+
+# --------------------------------------------------------------------------- #
+# ruff
+# --------------------------------------------------------------------------- #
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C4", "PT"]
+ignore = [
+  "SIM108",  # ternary is not always clearer than if/else
+  "RUF001",  # ambiguous unicode (we use em dashes / arrows in alert text on purpose)
+  "RUF002",
+  "RUF003",
+  "PT011",   # pytest.raises(match=...) not required everywhere
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "PT012"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["kite_alerts"]
+
+# --------------------------------------------------------------------------- #
+# black
+# --------------------------------------------------------------------------- #
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+# --------------------------------------------------------------------------- #
+# mypy -- strict on the modules where correctness is load-bearing.
+# pandas-heavy modules run under a relaxed profile because pandas ships no
+# runtime type information that survives strict mode.
+# --------------------------------------------------------------------------- #
+[tool.mypy]
+python_version = "3.10"
+# Without this plugin mypy cannot see ``Field(default, ...)`` defaults and treats
+# every pydantic field as a required constructor argument.
+plugins = ["pydantic.mypy"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+files = ["src/kite_alerts"]
+
+[[tool.mypy.overrides]]
+module = [
+  "kite_alerts.core.*",
+  "kite_alerts.config.*",
+  "kite_alerts.persistence.*",
+  "kite_alerts.strategy.base",
+  "kite_alerts.notifiers.base",
+  "kite_alerts.observability.metrics",
+]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["kite_alerts.indicators.*", "kite_alerts.strategy.rules.*", "kite_alerts.data.*"]
+disallow_untyped_defs = true
+disallow_any_unimported = false
+
+[[tool.mypy.overrides]]
+module = ["kiteconnect.*", "dotenv.*", "yaml.*"]
+ignore_missing_imports = true
+
+# --------------------------------------------------------------------------- #
+# pytest / coverage
+# --------------------------------------------------------------------------- #
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-q --strict-markers --strict-config"
+markers = ["slow: long-running tests", "e2e: end-to-end pipeline tests"]
+filterwarnings = [
+  # A numpy 2.5 + pandas 2.3 mismatch surfaces as warnings attributed to our
+  # own modules; ignore that specific message rather than the whole category.
+  "ignore:The 'generic' unit for NumPy timedelta is deprecated:DeprecationWarning",
+  "error::DeprecationWarning:kite_alerts.*",
+  "ignore::DeprecationWarning:pandas.*",
+  "ignore::DeprecationWarning:numpy.*",
+]
+
+[tool.coverage.run]
+source = ["src/kite_alerts"]
+branch = true
+omit = ["src/kite_alerts/cli/login_cmd.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "@overload",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"

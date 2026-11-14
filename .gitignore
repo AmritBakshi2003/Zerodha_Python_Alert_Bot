@@ -1,0 +1,37 @@
+# --- secrets: never commit these ---------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+secrets/
+secrets/*
+
+# --- runtime state -----------------------------------------------------------
+logs/
+cache/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+dead-letter.jsonl
+
+# --- python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.python-version
+
+# --- tooling -----------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.DS_Store
