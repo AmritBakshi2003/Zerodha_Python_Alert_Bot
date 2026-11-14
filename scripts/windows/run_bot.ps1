@@ -124,7 +124,7 @@ if (-not (Test-Path -LiteralPath $LogDir)) {
 }
 $SupervisorLog = [IO.Path]::Combine($LogDir, ('supervisor-{0}.log' -f (Get-IstNow).ToString('yyyyMMdd')))
 
-function Write-Log {
+function Write-BotLog {
     param(
         [Parameter(Mandatory)][string]$Message,
         [ValidateSet('INFO', 'WARN', 'ERROR')][string]$Level = 'INFO'
@@ -143,45 +143,45 @@ try {
         $StopSpan = [TimeSpan]::Parse($CloseText).Add([TimeSpan]::FromMinutes(5))
     }
 } catch {
-    Write-Log "cannot read the stop time (StopAt='$StopAt', SESSION_CLOSE='$CloseText'); use HH:MM." 'ERROR'
+    Write-BotLog "cannot read the stop time (StopAt='$StopAt', SESSION_CLOSE='$CloseText'); use HH:MM." 'ERROR'
     exit 2
 }
 if ($StopSpan.TotalDays -ge 1) {
-    Write-Log "stop time $StopSpan crosses midnight; clamping to 23:59." 'WARN'
+    Write-BotLog "stop time $StopSpan crosses midnight; clamping to 23:59." 'WARN'
     $StopSpan = [TimeSpan]::FromHours(23).Add([TimeSpan]::FromMinutes(59))
 }
 
 $stopLabel = $StopSpan.ToString('hh\:mm')
-Write-Log "supervisor starting (stop at $stopLabel IST, repo $RepoRoot)"
+Write-BotLog "supervisor starting (stop at $stopLabel IST, repo $RepoRoot)"
 
 if (-not (Test-Path -LiteralPath $VenvPython)) {
-    Write-Log 'no virtual environment found; run .\scripts\windows\setup.ps1 first.' 'ERROR'
+    Write-BotLog 'no virtual environment found; run .\scripts\windows\setup.ps1 first.' 'ERROR'
     exit 1
 }
 
 if (-not $Force) {
     $now = Get-IstNow
     if ($now.DayOfWeek -eq [DayOfWeek]::Saturday -or $now.DayOfWeek -eq [DayOfWeek]::Sunday) {
-        Write-Log ("{0} is a {1}; NSE is closed, nothing to do." -f $now.ToString('yyyy-MM-dd'), $now.DayOfWeek)
+        Write-BotLog ("{0} is a {1}; NSE is closed, nothing to do." -f $now.ToString('yyyy-MM-dd'), $now.DayOfWeek)
         exit 0
     }
     if ($now.TimeOfDay -ge $StopSpan) {
-        Write-Log "it is already $($now.ToString('HH:mm')) IST, past $stopLabel; the market is closed."
+        Write-BotLog "it is already $($now.ToString('HH:mm')) IST, past $stopLabel; the market is closed."
         exit 0
     }
 
     $openWait = [TimeSpan]::FromHours(9) - $now.TimeOfDay
     if ($openWait.TotalSeconds -gt 0) {
         if ($openWait.TotalMinutes -gt $MaxWaitForOpenMinutes) {
-            Write-Log ("it is {0} IST and the session opens at 09:15: waiting would take {1:N0} min (limit {2:N0}). Start the bot closer to the open, or use the Task Scheduler recipe in deploy/README.md." -f $now.ToString('HH:mm'), $openWait.TotalMinutes, $MaxWaitForOpenMinutes) 'WARN'
+            Write-BotLog ("it is {0} IST and the session opens at 09:15: waiting would take {1:N0} min (limit {2:N0}). Start the bot closer to the open, or use the Task Scheduler recipe in deploy/README.md." -f $now.ToString('HH:mm'), $openWait.TotalMinutes, $MaxWaitForOpenMinutes) 'WARN'
             exit 0
         }
-        Write-Log ("before 09:00 IST; waiting {0:N0} min for the session to open." -f $openWait.TotalMinutes)
+        Write-BotLog ("before 09:00 IST; waiting {0:N0} min for the session to open." -f $openWait.TotalMinutes)
         while ((Get-IstNow).TimeOfDay -lt [TimeSpan]::FromHours(9)) {
             Start-Sleep -Seconds 30
         }
     }
-    Write-Log 'session window reached; starting the bot.'
+    Write-BotLog 'session window reached; starting the bot.'
 }
 
 if ($Once) {
@@ -194,7 +194,7 @@ $attempt = 0
 while ($true) {
     $remaining = ($StopSpan - (Get-IstNow).TimeOfDay).TotalSeconds
     if (-not $Force -and $remaining -le 0) {
-        Write-Log "past $stopLabel IST; stopping."
+        Write-BotLog "past $stopLabel IST; stopping."
         exit 0
     }
 
@@ -207,7 +207,7 @@ while ($true) {
     }
 
     $attempt++
-    Write-Log ("starting the bot (attempt {0} of {1})" -f $attempt, $maxAttempts)
+    Write-BotLog ("starting the bot (attempt {0} of {1})" -f $attempt, $maxAttempts)
 
     $code = 1
     Push-Location $RepoRoot
@@ -215,33 +215,33 @@ while ($true) {
         & $VenvPython @runArgs
         $code = $LASTEXITCODE
     } catch {
-        Write-Log ("could not start the bot: {0}" -f $_.Exception.Message) 'ERROR'
+        Write-BotLog ("could not start the bot: {0}" -f $_.Exception.Message) 'ERROR'
         $code = 1
     } finally {
         Pop-Location
     }
-    Write-Log "the bot exited with code $code"
+    Write-BotLog "the bot exited with code $code"
 
     if ($code -eq 0) {
-        Write-Log 'clean exit (market close, duration reached or Ctrl-C); supervisor done.'
+        Write-BotLog 'clean exit (market close, duration reached or Ctrl-C); supervisor done.'
         exit 0
     }
     if ($code -eq 2) {
-        Write-Log 'configuration error (exit 2); not restarting. Fix .env (KITE_API_KEY, KITE_API_SECRET, SYMBOLS) and start again.' 'ERROR'
+        Write-BotLog 'configuration error (exit 2); not restarting. Fix .env (KITE_API_KEY, KITE_API_SECRET, SYMBOLS) and start again.' 'ERROR'
         exit 2
     }
     if ($code -eq 3) {
-        Write-Log 'authentication error (exit 3); not restarting. Run .\scripts\windows\login.ps1, then start the bot again.' 'ERROR'
+        Write-BotLog 'authentication error (exit 3); not restarting. Run .\scripts\windows\login.ps1, then start the bot again.' 'ERROR'
         exit 3
     }
 
     if ($attempt -ge $maxAttempts) {
-        Write-Log ("giving up after {0} attempt(s); the last exit code was {1}." -f $attempt, $code) 'ERROR'
+        Write-BotLog ("giving up after {0} attempt(s); the last exit code was {1}." -f $attempt, $code) 'ERROR'
         exit 1
     }
 
     $delay = [int][Math]::Min($BackoffBaseSeconds * [Math]::Pow(2, $attempt - 1), $BackoffMaxSeconds)
     if ($delay -lt 0) { $delay = 0 }
-    Write-Log ("crash (exit {0}); restarting in {1}s." -f $code, $delay) 'WARN'
+    Write-BotLog ("crash (exit {0}); restarting in {1}s." -f $code, $delay) 'WARN'
     if ($delay -gt 0) { Start-Sleep -Seconds $delay }
 }
