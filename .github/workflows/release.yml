@@ -1,0 +1,147 @@
+name: Release
+
+# Publishing is a deliberate act: only an annotated/semantic tag starts this.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Read-only by default. Only the publish job may write, and only releases.
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Nothing is published unless the same gates as CI pass for the tagged
+  #    commit, and the build artefacts are produced by this run.
+  # ---------------------------------------------------------------------------
+  gates:
+    name: Gates and artefacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]" build
+
+      - name: ruff
+        run: ruff check .
+
+      - name: black
+        run: black --check src tests scripts
+
+      - name: mypy
+        run: mypy
+
+      - name: pytest (coverage gate)
+        run: pytest --cov=kite_alerts --cov-report=xml
+
+      - name: Alerts-only guard
+        run: pytest tests/test_alerts_only.py -q
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Checksums
+        run: |
+          cd dist
+          rm -f SHA256SUMS.txt
+          for file in *; do
+            [ -f "$file" ] || continue
+            sha256sum "$file"
+          done > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 2. Optional: a one-file .exe so the bot can run without installing Python.
+  #    Deliberately non-blocking - a packaging regression must never stop a
+  #    source release from going out.
+  # ---------------------------------------------------------------------------
+  windows-exe:
+    name: Windows .exe (experimental, non-blocking)
+    needs: [gates]
+    runs-on: windows-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e . pyinstaller
+
+      - name: Build the one-file exe
+        run: pyinstaller --onefile --name kite-alerts --hidden-import kiteconnect --hidden-import yaml --hidden-import dotenv --collect-submodules kite_alerts scripts/pyinstaller_entry.py
+
+      - name: The exe must reproduce the golden demo output
+        run: python scripts/check_demo_golden.py -- dist/kite-alerts.exe demo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kite-alerts-exe
+          path: dist/kite-alerts.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3. Create the Release and attach everything. Runs even if the experimental
+  #    exe job failed, as long as the gates passed.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish release
+    needs: [gates, windows-exe]
+    if: always() && needs.gates.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: kite-alerts-exe
+          path: dist
+
+      - name: Checksums over everything attached
+        run: |
+          cd dist
+          rm -f SHA256SUMS.txt
+          for file in *; do
+            [ -f "$file" ] || continue
+            sha256sum "$file"
+          done > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create the GitHub Release
+        env:
+          # The automatic Actions token, scoped by the job's permissions above.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "kite-alerts ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/*
