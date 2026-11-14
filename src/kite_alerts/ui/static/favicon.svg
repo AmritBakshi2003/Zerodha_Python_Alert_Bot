@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Kite Alerts">
+  <rect width="32" height="32" rx="7" fill="#14532d"/>
+  <path d="M8 10v12h3v-5l5 5h4l-6-6 6-6h-4l-5 5v-5z" fill="#ffffff"/>
+  <circle cx="24" cy="10" r="3" fill="#43d17c"/>
+</svg>

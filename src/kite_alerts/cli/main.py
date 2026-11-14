@@ -5,6 +5,7 @@ Commands:
     login          refresh the daily Kite access token
     replay         replay a CSV or Kite history through the same engine
     demo           offline synthetic demo (BUY + SELL, no account needed)
+    ui             local read-only dashboard with an offline demo player
     config-check   validate configuration and print a redacted summary
     version        print the version
 """
@@ -53,6 +54,32 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--json", action="store_true", help="also print machine-readable JSON")
 
     sub.add_parser("demo", help="offline synthetic demo (no account needed)")
+
+    ui = sub.add_parser("ui", help="local read-only dashboard with a demo player")
+    ui.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="loopback address to listen on (default: 127.0.0.1)",
+    )
+    ui.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="port to listen on (default: 8765)",
+    )
+    ui.add_argument(
+        "--open",
+        action="store_true",
+        dest="open_browser",
+        help="open the dashboard in your default browser",
+    )
+    ui.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="path to the SQLite alert store (default: DB_PATH from .env)",
+    )
+
     sub.add_parser("config-check", help="validate configuration and print a redacted summary")
     return parser
 
@@ -153,6 +180,26 @@ def _cmd_demo(_args: argparse.Namespace) -> int:
     return demo_main()
 
 
+def _cmd_ui(args: argparse.Namespace) -> int:
+    try:
+        from ..ui.server import run_ui
+    except ImportError as exc:  # fastapi/uvicorn are the optional `ui` extra
+        print(
+            "The dashboard needs two optional packages that are not installed.\n"
+            'Install them with:  pip install -e ".[ui]"\n'
+            f"(details: {exc})",
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG
+    return run_ui(
+        host=args.host,
+        port=args.port,
+        open_browser=args.open_browser,
+        env_file=args.env_file,
+        db_path=args.db,
+    )
+
+
 def _cmd_config_check(args: argparse.Namespace) -> int:
     settings = load_settings(args.env_file)
     print(json.dumps(settings.redacted(), indent=2, default=str))
@@ -173,6 +220,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "login": _cmd_login,
         "replay": _cmd_replay,
         "demo": _cmd_demo,
+        "ui": _cmd_ui,
         "config-check": _cmd_config_check,
     }
     handler = handlers.get(args.command)

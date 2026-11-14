@@ -48,12 +48,45 @@ SELL and one BUY with reasons — the same output as `demo_output.txt`.
 | `kite-alerts login` | Exchange a `request_token` for today's access token and write it to `.env`. |
 | `kite-alerts config-check` | Validate configuration, print the redacted snapshot and any warnings. |
 | `kite-alerts demo` | Offline synthetic replay; needs no account, no network, no credentials. |
+| `kite-alerts ui` | Local dashboard: read-only history, demo player, test alert. Requires the optional `ui` extra. |
 | `kite-alerts replay --csv PATH` | Replay a CSV of 1-minute candles through the *same* `Engine`. |
 | `kite-alerts replay --from-kite` | Replay recent Kite history for one symbol. |
 | `kite-alerts --version` | Print the version. |
 
 `replay` is analysis, not a backtest rig: the report is labelled `ANALYSIS ONLY`,
 uses no costs/slippage/sizing, and adds `+5m/+15m/+30m` forward returns per alert.
+
+## Using the dashboard
+
+The dashboard is a local web page for watching the bot. It is optional, reads your
+data, and never places orders.
+
+```bash
+pip install -e ".[ui]"      # one-time: adds FastAPI + uvicorn
+kite-alerts ui --open       # opens http://127.0.0.1:8765 in your browser
+```
+
+What each part does:
+
+- **Dashboard** — says plainly whether the bot is running (it asks the bot's
+existing `/health` endpoint), shows today's BUY and SELL alert counts, and keeps
+a live feed of the latest alerts with the full reason.
+- **Demo player** — press Play to replay a practice trading day through the real
+alert engine at 1x, 5x, 20x or 60x. It draws a candle chart with EMA lines, RSI
+and MACD panels, the opening-range band, and a BUY/SELL marker on the exact
+candle that fired each alert. Each alert card shows which rules agreed. It works
+with no account and no internet, and never writes to your alert history.
+- **Alert history** — the alerts the bot recorded, filtered by symbol and side,
+with pages. The database is opened read-only, so this page can never change it.
+- **Test alert** — sends a clearly labelled TEST message through the channels in
+your `.env` so you can check your phone. Limited to one every 10 seconds, and
+never recorded as a real alert.
+- **Help** — version, mode, the alerts-only statement, and a first-day checklist.
+
+The dashboard only listens on your own computer (`127.0.0.1`). Use `--port` to
+change the port and `--db` to point at a different database. Stop it with Ctrl-C
+in the window where you started it. Starting the bot is still a separate command
+(`kite-alerts run`); this version does not start or stop it from the page.
 
 ## Signal logic
 
