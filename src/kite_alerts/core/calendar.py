@@ -108,7 +108,7 @@ class TradingCalendar:
 
     def session_minutes_elapsed(self, when: dt.datetime | pd.Timestamp) -> float:
         start, _ = self.session_bounds(when)
-        return max(0.0, (to_ist_ts(when) - start).total_seconds() / 60.0)
+        return max(0.0, float((to_ist_ts(when) - start).total_seconds()) / 60.0)
 
     def describe(self, when: dt.datetime | pd.Timestamp) -> str:
         moment = to_ist(when)

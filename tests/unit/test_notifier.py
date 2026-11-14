@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import smtplib
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 import requests
@@ -165,7 +165,7 @@ class TestSlack:
 
 class TestEmail:
     class FakeSMTP:
-        instances: list[Any] = []
+        instances: ClassVar[list[Any]] = []
         fail = False
 
         def __init__(self, host: str, port: int, timeout: float) -> None:

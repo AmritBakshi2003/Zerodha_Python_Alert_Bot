@@ -161,10 +161,14 @@ def evaluate(
 
     alert: Alert | None = None
     if not degraded:
-        required_ok = _required_rules_satisfied(enabled, votes)
-        if bull_score >= need and not bear and required_ok:
+        required_ids = _required_rule_ids(enabled)
+        if bull_score >= need and not bear and _required_rules_agree(required_ids, votes, Side.BUY):
             alert = _build_alert(symbol, frame, params, Side.BUY, bull, available, enabled)
-        elif bear_score >= need and not bull and required_ok:
+        elif (
+            bear_score >= need
+            and not bull
+            and _required_rules_agree(required_ids, votes, Side.SELL)
+        ):
             alert = _build_alert(symbol, frame, params, Side.SELL, bear, available, enabled)
 
     if degraded:
@@ -187,23 +191,39 @@ def evaluate(
     return alert
 
 
-def _required_rules_satisfied(
-    enabled: tuple[tuple[object, object], ...], votes: list[RuleVote]
-) -> bool:
-    """Every rule marked ``required`` must have voted and be part of the majority."""
+def _required_rule_ids(enabled: tuple[tuple[object, object], ...]) -> set[str]:
+    """Rule ids configured as mandatory (``RULE_<ID>_REQUIRED=true``)."""
     from ..config.settings import RuleSettings
 
-    required_ids = {
-        rule_id
-        for rule_id in RULE_IDS
-        for _rule, settings in enabled
-        if getattr(_rule, "id", None) == rule_id
-        and isinstance(settings, RuleSettings)
+    return {
+        str(getattr(rule, "id", ""))
+        for rule, settings in enabled
+        if isinstance(settings, RuleSettings)
         and settings.required
+        and getattr(rule, "id", None) in RULE_IDS
     }
+
+
+def _required_rules_agree(required_ids: set[str], votes: list[RuleVote], side: Side) -> bool:
+    """Every mandatory rule must be available *and* vote with the alert's side.
+
+    A required rule that is unavailable or neutral blocks the alert - that is the
+    entire point of marking it required. (The previous implementation required
+    *every* voting rule to be mandatory, which silently disabled alerting as soon
+    as one rule was flagged required.)
+    """
     if not required_ids:
         return True
-    return all(vote.rule_id in required_ids for vote in votes if vote.weight > 0)
+    by_rule = {vote.rule_id: vote for vote in votes}
+    for rule_id in required_ids:
+        vote = by_rule.get(rule_id)
+        if vote is None:
+            return False
+        if side is Side.BUY and vote.vote <= 0:
+            return False
+        if side is Side.SELL and vote.vote >= 0:
+            return False
+    return True
 
 
 def _build_alert(

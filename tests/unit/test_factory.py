@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from kite_alerts.config.settings import Channel, NotifySettings
 from kite_alerts.notifiers.console import ConsoleNotifier
@@ -58,5 +59,5 @@ def test_channels_are_closed_safely() -> None:
 
 
 def test_invalid_channel_configuration_is_rejected_by_settings() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         NotifySettings(channels=(Channel.TELEGRAM,))

@@ -8,9 +8,11 @@ with ``0600`` permissions, and can print the token for a secret manager instead.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from ..config.settings import load_settings
@@ -43,10 +45,8 @@ def write_access_token(env_path: Path, token: str) -> None:
 
     temp = env_path.with_suffix(env_path.suffix + ".tmp")
     temp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    try:
+    with contextlib.suppress(OSError):  # pragma: no cover - Windows
         os.chmod(temp, 0o600)
-    except OSError:  # pragma: no cover - Windows
-        pass
     temp.replace(env_path)
 
 
