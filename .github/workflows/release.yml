@@ -62,7 +62,7 @@ jobs:
           done > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/*
@@ -95,7 +95,7 @@ jobs:
       - name: The exe must reproduce the golden demo output
         run: python scripts/check_demo_golden.py -- dist/kite-alerts.exe demo
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kite-alerts-exe
           path: dist/kite-alerts.exe
