@@ -1,0 +1,171 @@
+name: CI
+
+# Runs on every pull request and on pushes that land on main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: no job writes anything, and no secrets are referenced.
+permissions:
+  contents: read
+
+# A new push to a branch makes its in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Static analysis. Same configuration as pyproject.toml.
+  # ---------------------------------------------------------------------------
+  lint-types:
+    name: Lint & types
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: ruff
+        run: ruff check .
+
+      - name: black
+        run: black --check src tests scripts
+
+      - name: mypy
+        run: mypy
+
+  # ---------------------------------------------------------------------------
+  # 2. Test suite on every supported interpreter. The 85% coverage gate lives in
+  #    pyproject.toml (fail_under), so pytest-cov enforces it here for free.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: pytest
+        run: pytest --cov=kite_alerts --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          # A collection error can legitimately leave no report; the test job has
+          # already failed by then, so a missing artifact must not add noise.
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # 3. Prove a cold checkout works: no pip cache, no reused workspace, and every
+  #    offline entry point still produces the documented behaviour.
+  # ---------------------------------------------------------------------------
+  fresh-clone-integrity:
+    name: Fresh-clone integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deliberately the first step: on a pristine checkout nothing untracked may
+      # exist, so any hit here means a source file is invisible to git - the exact
+      # failure that silently dropped src/kite_alerts/data/. It also runs before
+      # an install can create __pycache__ or *.egg-info artifacts.
+      - name: Git hygiene (no source file is ignored)
+        run: |
+          ignored="$(git ls-files --others --ignored --exclude-standard src)"
+          if [ -n "$ignored" ]; then
+            echo "::error::untracked files under src/ are matched by .gitignore:"
+            echo "$ignored"
+            exit 1
+          fi
+
+          # --no-index makes check-ignore evaluate the rules even for tracked
+          # paths, which is what catches a *tracked* source file living under a
+          # directory an ignore rule would swallow.
+          matched="$(git ls-files src | git check-ignore --no-index --stdin || true)"
+          if [ -n "$matched" ]; then
+            echo "::error::tracked source files match a .gitignore rule:"
+            echo "$matched"
+            exit 1
+          fi
+
+          echo "git hygiene OK: no file under src/ is ignored"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # No `cache: pip` on purpose - this job exists to prove a cold install.
+
+      - name: Install from a clean checkout
+        run: pip install -e ".[dev]"
+
+      - name: Demo via module matches demo_output.txt
+        run: |
+          python -m kite_alerts.demo > /tmp/demo-module.txt
+          diff -u demo_output.txt /tmp/demo-module.txt
+
+      - name: Demo via CLI matches demo_output.txt
+        run: |
+          kite-alerts demo > /tmp/demo-cli.txt
+          diff -u demo_output.txt /tmp/demo-cli.txt
+
+      # .env.example holds placeholders only, so config-check must pass offline.
+      - name: config-check accepts placeholder values (no network)
+        run: |
+          cp .env.example /tmp/ci-placeholder.env
+          kite-alerts --env-file /tmp/ci-placeholder.env config-check
+
+      - name: Import integrity
+        run: python scripts/check_imports.py
+
+  # ---------------------------------------------------------------------------
+  # 4. The hard constraint, isolated so a violation is obvious in the PR checks
+  #    instead of hidden inside a 350-test run.
+  # ---------------------------------------------------------------------------
+  alerts-only:
+    name: Alerts-only guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: The package must never reference an order API
+        run: pytest tests/test_alerts_only.py -q

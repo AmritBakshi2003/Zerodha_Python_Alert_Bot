@@ -1,3 +1,5 @@
+[![CI](https://github.com/AmritBakshi2003/Zerodha_Python_Alert_Bot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AmritBakshi2003/Zerodha_Python_Alert_Bot/actions/workflows/ci.yml)
+
 # Kite Connect Trade-Alert Bot (alerts only)
 
 Streams live data from Zerodha Kite Connect, evaluates a blended rule set on every
