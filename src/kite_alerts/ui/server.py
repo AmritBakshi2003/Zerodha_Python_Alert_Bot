@@ -75,12 +75,18 @@ def run_ui(
     open_browser: bool = False,
     env_file: str | Path = ".env",
     db_path: str | Path | None = None,
+    simulate_kite: bool = False,
     browser_open: Callable[[str], Any] = webbrowser.open,
 ) -> int:
     """Run the dashboard until Ctrl-C. Raises ``ConfigError`` for a bad bind/port."""
     host = validate_bind_host(host)
     port = validate_port(port)
-    context = build_context(env_file=env_file, db_path=db_path, port=port)
+    context = build_context(
+        env_file=env_file,
+        db_path=db_path,
+        port=port,
+        simulate_kite=simulate_kite,
+    )
     app = create_app(context)
     url = dashboard_url(host, port)
 
@@ -91,6 +97,11 @@ def run_ui(
         "Press Ctrl-C in this window to stop the dashboard.",
         flush=True,
     )
+    if context.simulate_kite:
+        print(
+            "Kite simulator active: synthetic ticks generated without Zerodha credentials.",
+            flush=True,
+        )
     if context.settings_error:
         print(
             "Note: your settings could not be read, so the demo still works but live "
@@ -111,5 +122,11 @@ def run_ui(
 
     import uvicorn  # imported here so the headless bot never needs it
 
-    uvicorn.run(app, host=host, port=port, log_level="info", access_log=False)
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="info", access_log=False)
+    finally:
+        if context.simulator:
+            context.simulator.stop()
+        if context.feed:
+            context.feed.stop()
     return 0

@@ -137,6 +137,27 @@
                 <p id="chart-freshness">Loading the latest candle…</p>
                 <p id="chart-checked" class="muted small"></p>
                 <p id="chart-delay" class="small muted"></p>
+                <p id="chart-oi-note" class="muted small" hidden>OI refreshes less often than price, so the OI rule lags the price rules.</p>
+              </div>
+              <div class="live-feed-bar" id="live-feed-bar" hidden>
+                <div class="live-feed-status">
+                  <span class="status-dot" id="live-feed-dot" data-state="disconnected" aria-hidden="true"></span>
+                  <span id="live-feed-state">Feed: disconnected</span>
+                  <span class="muted" aria-hidden="true">·</span>
+                  <span id="live-feed-symbols">Subscribed: 0</span>
+                  <span class="muted" aria-hidden="true">·</span>
+                  <span id="live-feed-tick-time">Last tick: —</span>
+                  <span class="muted" aria-hidden="true">·</span>
+                  <span id="live-feed-latency">Latency: —</span>
+                  <span class="muted" aria-hidden="true">·</span>
+                  <span id="live-feed-reconnects">Reconnects: 0</span>
+                </div>
+                <div class="sim-controls" id="sim-controls" hidden>
+                  <span class="sim-label">Simulator controls:</span>
+                  <button type="button" class="button button-quiet button-small" id="sim-btn-disconnect">Trigger Disconnect</button>
+                  <button type="button" class="button button-quiet button-small" id="sim-btn-expiry">Simulate Token Expiry</button>
+                  <button type="button" class="button button-quiet button-small" id="sim-btn-reconnect">Resume / Reconnect</button>
+                </div>
               </div>
               <p class="chart-message" id="chart-message" role="status"></p>
               <p class="chart-stale" id="chart-stale" hidden></p>

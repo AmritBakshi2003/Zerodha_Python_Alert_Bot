@@ -51,6 +51,10 @@ CASES: list[tuple[str, str, dict | None]] = [
     ("post", "/api/practice/check", None),
     ("get", "/api/about", None),
     ("get", "/api/status", None),
+    ("get", "/api/chart/feed-status", None),
+    ("post", "/api/kite/simulate/disconnect", None),
+    ("post", "/api/kite/simulate/token-expiry", None),
+    ("post", "/api/kite/simulate/reconnect", None),
 ]
 
 
@@ -120,8 +124,15 @@ def test_settings_never_expose_a_secret_even_when_set(tmp_path: Path) -> None:
 
 def test_csp_and_headers_still_apply_to_new_routes(tmp_path: Path) -> None:
     client, _context, _env, _kite = connect_client(tmp_path)
+    paths = (
+        "/api/settings",
+        "/api/kite/session",
+        "/api/data-sources",
+        "/api/chart/feed-status",
+        "/",
+    )
     with client:
-        for path in ("/api/settings", "/api/kite/session", "/api/data-sources", "/"):
+        for path in paths:
             response = client.get(path)
             assert response.headers["content-security-policy"]
             assert response.headers["x-frame-options"] == "DENY"
@@ -133,8 +144,14 @@ def test_a_foreign_host_cannot_read_the_new_routes(tmp_path: Path) -> None:
     from fastapi.testclient import TestClient
 
     _client, context, _env, _kite = connect_client(tmp_path)
+    paths = (
+        "/api/settings",
+        "/api/kite/session",
+        "/api/data-sources",
+        "/api/chart/feed-status",
+    )
     with TestClient(create_app(context), base_url="http://evil.example:8765") as evil:
-        for path in ("/api/settings", "/api/kite/session", "/api/data-sources"):
+        for path in paths:
             response = evil.get(path)
             assert response.status_code == 400
             assert "unexpected host name" in response.json()["detail"]

@@ -111,8 +111,7 @@ class TestAlertService:
                 label="Could not send the test alert",
                 detail=detail,
                 setup=(
-                    "Fix the .env problem above, then restart the dashboard with "
-                    "`kite-alerts ui`.",
+                    "Fix the .env problem above, then restart the dashboard with `kite-alerts ui`.",
                 ),
             )
 

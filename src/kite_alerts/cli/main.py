@@ -79,6 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="path to the SQLite alert store (default: DB_PATH from .env)",
     )
+    ui.add_argument(
+        "--simulate-kite",
+        action="store_true",
+        help="run dashboard with synthetic Kite live feed (no Zerodha account needed)",
+    )
 
     sub.add_parser("config-check", help="validate configuration and print a redacted summary")
     return parser
@@ -181,6 +186,8 @@ def _cmd_demo(_args: argparse.Namespace) -> int:
 
 
 def _cmd_ui(args: argparse.Namespace) -> int:
+    import os
+
     try:
         from ..ui.server import run_ui
     except ImportError as exc:  # fastapi/uvicorn are the optional `ui` extra
@@ -191,12 +198,17 @@ def _cmd_ui(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_CONFIG
+    simulate_kite = bool(
+        getattr(args, "simulate_kite", False)
+        or os.environ.get("SIMULATE_KITE", "").lower() in ("1", "true")
+    )
     return run_ui(
         host=args.host,
         port=args.port,
         open_browser=args.open_browser,
         env_file=args.env_file,
         db_path=args.db,
+        simulate_kite=simulate_kite,
     )
 
 

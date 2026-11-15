@@ -64,7 +64,7 @@ def login(
     secret = api_secret or settings.kite.api_secret.get_secret_value()
     if not key or not secret:
         raise ConfigError(
-            "KITE_API_KEY and KITE_API_SECRET are required for login " f"(set them in {env_file})"
+            f"KITE_API_KEY and KITE_API_SECRET are required for login (set them in {env_file})"
         )
 
     from kiteconnect import KiteConnect

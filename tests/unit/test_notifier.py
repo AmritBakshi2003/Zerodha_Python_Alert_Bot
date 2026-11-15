@@ -64,7 +64,9 @@ class FakeSession:
 
 def telegram(session: FakeSession) -> TelegramNotifier:
     return TelegramNotifier(
-        bot_token=TELEGRAM_TOKEN, chat_id="42", session=session  # type: ignore[arg-type]
+        bot_token=TELEGRAM_TOKEN,
+        chat_id="42",
+        session=session,  # type: ignore[arg-type]
     )
 
 
