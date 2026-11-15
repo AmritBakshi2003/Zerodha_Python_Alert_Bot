@@ -1,22 +1,38 @@
-# Dashboard design (C1 shipped, C2/C3 planned)
+# Dashboard design (C1 + C2 shipped, C3 planned)
 
-C1 ships a local, read-only dashboard with an offline demo player. This note
-records the shape it settled on, so C2 (settings + Zerodha login) and C3 (CSV
-replay + start/stop with logs) can be added without moving C1.
+C1 shipped a local, read-only dashboard with an offline demo player. C2 adds the
+sidebar layout, the settings form, guided notifications, and the
+"bring your own Kite key" connection flow. C3 (chart workstation: chart types,
+timeframes, watchlist, live ticks) is still planned and deliberately absent.
+
+Nothing here changes the signal rules, the engine, or the trading path: the
+project remains alerts-only and has no order API.
 
 ## Layering
 
 ```
 kite_alerts/ui/
-├── app.py            FastAPI factory, UiContext, JSON routes
-├── security.py       loopback bind check, Host validation, CSP, origin check
-├── history.py        read-only SQLite reader (mode=ro + PRAGMA query_only)
-├── status.py         probes the bot's existing /health endpoint
-├── demo_player.py    the synthetic day through the real Engine
-├── series.py         EMA/RSI/MACD/ORB series from the bot's own indicators
-├── test_alert.py     rate-limited TEST delivery with per-channel results
-├── server.py         validate host/port, build the app, run uvicorn
-└── static/           index.html, styles.css, app.js, vendored chart library
+├── app.py              FastAPI factory, UiContext, JSON routes
+├── security.py         loopback bind check, Host validation, CSP, origin check
+├── history.py          read-only SQLite reader (mode=ro + PRAGMA query_only)
+├── status.py           probes the bot's existing /health endpoint
+├── demo_player.py      synthetic day through the real Engine (+ saved params)
+├── series.py           EMA/RSI/MACD/ORB series from the bot's own indicators
+├── test_alert.py       rate-limited TEST delivery with per-channel results
+├── settings_schema.py  form metadata derived from the pydantic models
+├── settings_store.py   atomic .env writes, validation, backups, rate limit
+├── kite_connect.py     pending login, token exchange, session, data probe
+├── notifications.py    Telegram getUpdates -> chat id
+├── server.py           validate host/port, build the app, run uvicorn
+└── static/
+    ├── index.html      sidebar + six page sections
+    ├── styles.css      light/dark, keyboard focus, responsive
+    ├── app.js          hash router, dashboard, history, help
+    ├── dom.js          textContent-only DOM helpers and the fetch wrapper
+    ├── practice.js     demo player, first-run welcome, "Test my settings"
+    ├── settings.js     generated form, save/check, notification guide
+    ├── connect.js      wizard, status, manual fallback, data sources
+    └── vendor/         vendored chart library + licence
 ```
 
 `kite_alerts.ui.__init__` imports nothing heavy, and `cli/main.py` imports
@@ -24,121 +40,243 @@ kite_alerts/ui/
 touches FastAPI or uvicorn.
 
 Every route gets its dependencies from one explicitly constructed `UiContext`,
-which is how the tests inject a fake probe, a fake notifier factory and a
-temporary database. C2/C3 keep that pattern: add services to the context, not
-globals.
+which is how the tests inject a fake Kite client, a fake Telegram endpoint, a
+fake probe, a fake notifier factory and a temporary database. `UiContext.reload()`
+re-reads `.env` after a save or a connect/disconnect so every page sees the new
+state without a restart.
+
+## Layout and routing
+
+`index.html` is one document with a `<nav aria-label="Pages">` sidebar and six
+`<section data-page="…">` panels. The hash is the only router state:
+
+`#/dashboard`, `#/practice`, `#/alerts`, `#/settings`, `#/connect`, `#/help`.
+
+`app.js` maps an unknown or empty hash to Dashboard, toggles `hidden`, sets
+`aria-current="page"` on the active link, updates the title, and lazily
+initialises each page module on first visit. A skip link targets `<main
+tabindex="-1">`; every control is a real button/input/select with a label, and
+focus is visible. The pages are plain enough to work without a build step and
+are served by CSP `script-src 'self'`.
+
+The Dashboard refreshes its status and feed every five seconds only while it is
+the current page. Practice, Settings and Connect initialise once and then keep
+their state; returning to Settings while the form is dirty does not discard
+edits.
 
 ## API surface
 
-| Route | Method | C1 | C2 | C3 |
-|---|---|---|---|---|
-| `/api/status` | GET | bot health + today's counts | + settings warnings | + run state |
-| `/api/alerts/recent` | GET | latest alerts | — | — |
-| `/api/alerts/history` | GET | filters + pagination | — | — |
-| `/api/demo/timeline` | GET | full demo timeline | — | — |
-| `/api/demo/stream` | GET | NDJSON replay | — | — |
-| `/api/test-alert` | POST | rate-limited TEST | — | — |
-| `/api/about` | GET | version, mode, checklist | + login state | — |
-| `/api/settings` | GET | — | field metadata (labels, types, defaults, **no secret values**) | — |
-| `/api/settings` | PUT | — | validate + atomic write | — |
-| `/api/kite/login` | POST | — | start official login redirect | — |
-| `/api/kite/callback` | GET | — | loopback callback: store the daily token | — |
-| `/api/kite/session` | GET | — | `Connected as <name>, expires ~06:00` | — |
-| `/api/replay` | POST | — | — | CSV replay with forward returns |
-| `/api/run` | POST | — | — | start the bot subprocess |
-| `/api/run` | DELETE | — | — | stop it |
-| `/api/run/logs` | GET | — | — | SSE/NDJSON log tail |
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/status` | GET | bot health + today's counts |
+| `/api/alerts/recent` | GET | latest alerts |
+| `/api/alerts/history` | GET | filters + pagination (read-only DB) |
+| `/api/demo/timeline` | GET | full demo timeline |
+| `/api/demo/stream` | GET | NDJSON replay |
+| `/api/test-alert` | POST | rate-limited TEST delivery |
+| `/api/about` | GET | version, mode, checklist, connection chip |
+| `/api/settings` | GET | generated form metadata, **no secret values** |
+| `/api/settings` | PUT | validate + atomic `.env` write |
+| `/api/settings/check` | POST | same validation as `config-check`, redacted |
+| `/api/kite/login` | POST | begin a login attempt; returns `/kite/start` |
+| `/kite/start` | GET | 302 to Zerodha's login URL (not in OpenAPI) |
+| `/callback` | GET | loopback redirect; validates state, exchanges token |
+| `/api/kite/manual-token` | POST | same exchange for a pasted `request_token` |
+| `/api/kite/session` | GET | `Connected as <name>` / not connected / expired |
+| `/api/kite/disconnect` | POST | invalidate + clear the saved token |
+| `/api/data-sources` | GET | availability + plain reason per source (for C3) |
+| `/api/notifications/telegram/chat-id` | POST | read the bot's recent update |
+| `/api/practice/check` | POST | replay the demo with saved parameters |
 
-Routes stay in `app.py` while they are small; once C2 adds settings + login,
-split them into `ui/settings_routes.py` and `ui/login_routes.py` with an
-`APIRouter` each, included by `create_app`. The security middleware, context
-object and static assets are unchanged by that split.
+All state-changing routes call `require_same_origin`. `/kite/start` is a GET
+redirect but only ever forwards to the URL created by the immediately preceding
+same-origin `POST /api/kite/login`.
 
-## C2: settings form and "Connect to Zerodha"
+`GET /api/kite/login` deliberately does **not** exist: the login URL contains the
+API key, so it is never serialised. `POST /api/kite/login` returns
+`start_url: "/kite/start"`, and the browser navigates there; the 302's `Location`
+is the only place the key appears, and JavaScript on this origin cannot read it.
 
-**Field metadata from the pydantic models.** A new `ui/settings_schema.py`
-walks `Settings` / `StrategyParams` / `NotifySettings` / `SessionSettings` /
-`ResilienceSettings` / `ObservabilitySettings` field metadata (`title`,
-`description`, `ge`/`le`, enum choices) and returns ordered groups. Add a
-`Field(..., description="...")` (or a small plain-language label map keyed by
-field name) rather than a parallel hand-written schema. The UI renders inputs
-from that metadata, so a new pydantic field appears without a JS change.
+## Settings
 
-**Validation.** `PUT /api/settings` applies the values to a copy, runs
-`Settings(...)`, and returns per-field errors. Pydantic's error locations map
-1:1 to form fields; nothing is written unless the whole model validates.
+**Metadata from the pydantic models.** `settings_schema.py` defines an explicit
+env-key → model-path table (`KEY_SPECS`) with plain-language labels, help text,
+units and group assignment. Bounds (`ge`/`le`), default values and enum choices
+are read from the live `FieldInfo`, so a new pydantic field or a changed bound
+shows up in the form. The table is tested to cover every key the loader accepts
+(`env_warnings == ()` for a file built from all defaults).
 
-**Atomic write with backup.** New `ui/settings_store.py`:
-1. read the current `.env` (comments preserved);
-2. replace only the changed keys, quote values containing `#`, spaces or `=`;
-3. write `.env.tmp` in the same directory, `fsync`, then `os.replace()`;
-4. first copy the old file to `.env.bak-<UTC timestamp>`;
-5. never log or return a secret value.
+Groups are Instruments, Alert rules, Notifications and Advanced. Per-rule
+`ENABLED`/`WEIGHT`/`REQUIRED` controls come from `RULE_ENV_PREFIX` entries; the
+existing models do not define per-symbol rule overrides, so the page links to
+`OVERRIDES_FILE` rather than inventing one. Advanced fields render inside a
+`<details>` block to keep the first screen short.
 
-YAML per-symbol overrides use the same write-temp-then-replace helper.
+**Validation.** `PUT /api/settings` accepts `{"values": {ENV_KEY: value}}`. The
+store reads the current file, replaces or appends only those keys, writes
+`.env.tmp` in the same directory, and calls `load_settings(temp, environ={})`.
+Pydantic's `ValidationError` is formatted and its location (`params.ema_fast`,
+`ema_fast`, `rules.rsi_zone.weight`, `notify.channels`) is mapped back to the
+form's env key by `key_for_path`; a `ConfigError` from a typed reader is attached
+to the key named in its message. Nothing is replaced unless the whole model
+validates. Unknown keys and the write-only access token are refused by the
+allowlist; corrupted input returns 422 with the original file untouched.
 
-**Secret fields are write-only.** The GET schema marks a secret field as
-`{"secret": true, "is_set": true}`; it never returns the value. The PUT accepts
-`null`/omitted to mean "leave unchanged", and an explicit `""` to clear. The
-secrets-never-leaked test from C1 extends to these routes automatically because
-it calls every registered route.
+**Atomic write with backups.** On success:
+1. read the existing `.env` as text (comments and unknown keys preserved);
+2. copy it to `.env.bak-<UTC timestamp>` (pruned to the newest five);
+3. write `.env.tmp`, `flush`, `fsync`, then `os.replace()` it over `.env`;
+4. remove the temp file on any failure and leave the original intact;
+5. reload the context and return `saved`, `backup` and the applies notice.
 
-**Login flow.** New `ui/login_routes.py` reuses `cli/login_cmd.py`:
-- `POST /api/kite/login` calls the existing `KiteConnect.login_url()` and returns
-  the URL; the browser is sent there with a normal redirect, so the user types
-  their password and TOTP **on Zerodha's site**. The app never sees them.
-- The user configures the loopback callback in their Kite app; the callback route
-  receives `request_token`, then calls `login_cmd.extract_request_token()` and
-  `login_cmd.write_access_token()` — the same functions the CLI uses. No duplicate
-  exchange logic.
-- `GET /api/kite/session` calls `KiteConnect.profile()` if a token exists and
-  returns only `{name, connected, expires_note}`. Tokens are never returned.
-- Fallback: a "paste the request_token" form posts to the same callback handler.
+Saves are limited to one per second per process (`Retry-After` on 429). `.env`,
+`.env.*` and the backups are git-ignored, with a test that fails if that changes.
 
-Nothing in C2 stores a password, automates a browser, or bypasses Zerodha's page.
+**Secrets are write-only.** `field_payload(..., for_settings_page=True)` emits
+`{"secret": true, "is_set": true}` and no `value`. An empty string clears a
+secret; omitting the key leaves it unchanged. An empty submitted secret field is
+omitted by the browser. `KITE_ACCESS_TOKEN` is marked `connect_only` and can only
+be written by the connect flow, never by the settings form.
 
-## C3: CSV replay and start/stop with logs
+**Check settings.** `POST /api/settings/check` runs `load_settings` and returns
+`ok`, a plain message, warnings and the same redacted summary as
+`kite-alerts config-check` (no token, secret or full webhook URL).
 
-**CSV replay.** `POST /api/replay` accepts an uploaded CSV, runs it through the
-existing `backtest/replay.py` functions (`load_csv`, `replay_frame`,
-`build_result`), and returns the same `ANALYSIS ONLY` report plus forward returns
-as JSON. Uploads are size-capped, parsed in memory, and never written into the
-repository. Add a chart layer on top of the existing `series.build_chart` by
-passing the replay frame.
+## Connect: bring your own key
 
-**Start/stop.** `ui/run_control.py` owns a single supervised subprocess
-(`python -m kite_alerts run`), a PID file under `logs/`, and a bounded ring
-buffer of its output. It:
-- refuses to start if the health endpoint already answers;
-- captures stdout/stderr with the existing redaction filter (never the webhook
-  URL or tokens) and streams it over `GET /api/run/logs` as NDJSON;
-- stops with SIGTERM (Ctrl-Break / `taskkill` on Windows), then waits, then
-  reports; it never touches positions, because the bot has no order path;
-- is reachable only from the loopback dashboard, behind the same Host and
-  same-origin checks as `/api/test-alert`.
+Each person creates their own app at developers.kite.trade. The wizard shows
+that link, says live data needs a paid plan and to check the site for current
+pricing (no price is hardcoded), and shows the exact redirect URL derived from
+the running port: `http://127.0.0.1:<port>/callback`.
 
-## Security invariants (do not regress in C2/C3)
+**State machine.** `POST /api/kite/login`:
+1. refuses with `missing_key` / `missing_secret` (with guidance) or `settings`;
+2. builds the URL with `KiteConnect.login_url()` (the only way the SDK is used
+   here) and stores `{state, created, url}` in memory;
+3. returns `start_url="/kite/start"`, `redirect_url`, `expires_in=600`;
+4. sets an HttpOnly, SameSite=Lax `ka_connect_state` cookie.
 
-1. `--host` must be loopback; `validate_bind_host` is called before the app is
-   built.
+`GET /callback?request_token=…[&state=…|&status=…]`:
+- `status` other than `success` cancels the pending attempt and redirects with
+  `?connect=cancelled`;
+- effective state is the query `state` if present, otherwise the cookie;
+- `finish()` rejects `no_attempt` (nothing pending), `state_expired` (older than
+  ten minutes; the attempt is dropped), and `bad_state` (missing/wrong, compared
+  with `compare_digest`);
+- then it extracts the token with `cli/login_cmd.extract_request_token`, calls
+  `generate_session`, and writes the token with
+  `cli/login_cmd.write_access_token` — the same functions the CLI uses. No
+  login logic is duplicated;
+- success redirects to `/?connect=connected#/connect`, deletes the cookie and
+  clears the cached profile/data; failures redirect with a stable code that
+  `connect.js` turns into a plain sentence. The token is never in the URL.
+
+The pending attempt is single-use: it is cleared on success, on exchange failure
+and on cancellation. A missing/short `request_token` is `missing_token`; a Kite
+token rejection is `exchange_failed` (the exception text is not echoed); a
+network failure is `unreachable`.
+
+**Manual fallback.** The Connect page has a `<details>` box, "Zerodha didn't come
+back? Paste the request_token instead". It posts to `/api/kite/manual-token` with
+the same pending-state validation and the same exchange path, so the fallback
+cannot bypass the state check. Whether Kite's app console accepts an
+`http://127.0.0.1` redirect URL is **UNVERIFIED**; the manual box exists for that
+case.
+
+**Session panel.** `GET /api/kite/session` returns one of:
+- `connected` with the `user_name` from a read-only `profile()` call;
+- `not_connected` (no token, or settings unreadable);
+- `expired` when Kite rejects the token;
+- `unreachable` when the network fails.
+The profile is cached for 60 seconds per token. The payload includes
+`expires_note = "expires about 06:00 IST"`, `redirect_url`, `token_present` and
+the write-only credential pills. Disconnect calls `invalidate_access_token`
+(best effort) and always clears `KITE_ACCESS_TOKEN` locally.
+
+**Data-plan probe.** `GET /api/data-sources` makes at most one `ltp(["NSE:NIFTY
+50"])` call per 60 seconds (or on `?refresh=true`) and maps the result:
+
+| Result | `kite_live.available` | Message |
+|---|---|---|
+| data returned | true | "Live data available from your Kite account." |
+| permission error | false | "Your Kite plan has no market data … the delayed chart will be used." |
+| token error | false | "Token expired. Reconnect …" |
+| rate limit | false | "Kite is rate limiting …" |
+| network | false | "Kite is unreachable …" |
+| empty/other | false | plain "could not confirm" message |
+
+Delayed NSE, the crypto showcase and the practice demo are always reported
+available with a reason. Only the status model and endpoint ship in C2; C3 will
+consume them.
+
+## Guided notifications
+
+Settings renders Telegram and Slack guides from field metadata, with
+`@BotFather` instructions and channel checkboxes (console disabled and always
+on). `POST /api/notifications/telegram/chat-id` reads
+`https://api.telegram.org/bot<token>/getUpdates` server-side only, takes the
+newest chat id from `message`, `edited_message`, `channel_post` or
+`my_chat_member`, and fills the field in the browser. It never returns the bot
+token. 401, 409 (webhook set), 429, other HTTP errors, an `ok: false` payload and
+network failures each map to a distinct plain message. The token, chat id and
+webhook are saved through the same settings store, and "Send test alert" reuses
+the C1 test-alert route with per-channel results.
+
+## Security invariants (do not regress)
+
+1. `--host` must be loopback; `validate_bind_host` runs before the app is built.
 2. Every request must carry a loopback `Host` header (`SecurityMiddleware`).
-3. State-changing routes call `require_same_origin(request)`.
-4. No CORS middleware is added, ever. The CSP blocks inline scripts and
-   arbitrary `<style>` blocks. The vendored chart library needs inline style
-   *attributes* (`style-src-attr 'unsafe-inline'`) and injects one static
-   stylesheet, which is allowed by SHA-256 hash instead of `'unsafe-inline'`.
-   Recompute that hash when upgrading the chart library.
-5. All browser text is written with `textContent`; `innerHTML` does not appear in
-   `static/app.js`.
-6. No route returns a credential; the C1 test enumerates every route and fails if
-   a dummy secret appears in any response body.
-7. The UI database handle is always `mode=ro` + `PRAGMA query_only`.
-8. `tests/test_alerts_only.py` scans the UI's `.py`, `.js`, `.html` and `.css`
-   for order-API names and order endpoint paths.
-9. No runtime request leaves the machine: no CDN, no external font, no telemetry.
-   The vendored chart library and its licence live in `static/vendor/`.
+3. Every state-changing route calls `require_same_origin` (Origin and
+   `Sec-Fetch-Site`); there is no CORS middleware.
+4. The CSP is `default-src 'none'` with `script-src 'self'`; no inline script, no
+   CDN, no external font, no telemetry. The vendored chart library's injected
+   stylesheet is allowed by SHA-256 hash; inline style *attributes* are allowed
+   for its canvases.
+5. All browser text is written with `textContent`. No UI module uses
+   `innerHTML`, `outerHTML`, `insertAdjacentHTML` or `document.write`; a test
+   scans every JS/HTML asset.
+6. No endpoint returns a credential. The secrets test sends dummy API key,
+   secret, access token, request token, Telegram token and Slack webhook through
+   every new route (including error paths) and fails on any echoed value.
+7. Secrets are never logged: log lines carry only an error class or a redacted
+   message, never a token, secret, request token or webhook URL.
+8. The only Kite SDK methods are `login_url`, `generate_session`, `profile`,
+   `ltp`, `invalidate_access_token` and `set_access_token`. A test scans
+   `src/kite_alerts/ui/` for any other SDK call and for order/trade/position
+   names; `tests/test_alerts_only.py` extends that scan to every new `.py`,
+   `.js`, `.html` and `.css` asset.
+9. Settings writes are allowlisted, validated, atomic, backup-preserving and
+   rate-limited; the allowlist and the model's own readers are the only way a
+   value reaches `.env`.
+10. The history database stays `mode=ro` + `PRAGMA query_only`. Practice and
+    "Test my settings" never write to it.
 
-## Explicitly out of scope for C1
+## Tests and verification
 
-Starting the live feed, editing settings, Zerodha login, CSV replay, any order
-or position functionality, and any write to the alert database.
+No test reaches the network. `tests/unit/ui_support_c2.py` provides a temporary
+`.env`, `FakeKite`/`FakeKiteFactory`, `FakeTelegram`/`FakeResponse` and a context
+builder; `FakeMonotonic` controls the ten-minute state window and the caches.
+
+Covered: successful connect; missing/wrong/expired state; missing/cancelled
+attempt; manual fallback; exchange and network errors; expired/unreachable
+session; disconnect; every data-plan outcome and the cache; settings metadata,
+save, validation, unknown keys, corrupted input, interrupted replace, backup
+pruning, rate limit, secret clearing and redaction; chat-id detection and its
+error codes; "Test my settings" using saved parameters; the sidebar/routing
+static checks; credential non-leakage; the Kite allowlist; gitignore.
+
+`kite-alerts demo` still matches `demo_output.txt` exactly (line endings aside on
+Windows checkouts). The full suite runs under the 85% coverage gate plus ruff,
+black, mypy, import-integrity and the alerts-only scan.
+
+Explicitly **unverified** until someone uses real accounts: whether the Kite
+console accepts a loopback redirect URL, how a real plan-less account reports the
+missing market-data permission, real Telegram delivery, the owner's browser
+rendering and Windows firewall behaviour. These are documented rather than
+guessed.
+
+## Explicitly out of scope for C2
+
+Chart-type switching, timeframes, a watchlist, live ticks (C3); starting or
+stopping the bot from the page (C3); CSV replay (C3); any order, position,
+holding or trade functionality (never); a shared Kite API key (never).

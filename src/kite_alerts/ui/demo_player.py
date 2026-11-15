@@ -20,7 +20,6 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any
 
 import pandas as pd
@@ -166,9 +165,10 @@ def _rule_evidence(
     )
 
 
-def _replay() -> tuple[ChartSeries, tuple[Alert, ...], pd.DataFrame, StrategyParams]:
+def _replay(
+    params: StrategyParams,
+) -> tuple[ChartSeries, tuple[Alert, ...], pd.DataFrame, StrategyParams]:
     """Run the synthetic day through the production engine (in-memory only)."""
-    params = StrategyParams(ema_cross_lookback=5)
     calendar = TradingCalendar()
     sink = _CollectingSink()
     engine = Engine(
@@ -196,8 +196,8 @@ def _replay() -> tuple[ChartSeries, tuple[Alert, ...], pd.DataFrame, StrategyPar
     return build_chart(data, params), tuple(sink.alerts), data, params
 
 
-def _assemble() -> DemoTimeline:
-    chart, alerts, frame, params = _replay()
+def _assemble(params: StrategyParams) -> DemoTimeline:
+    chart, alerts, frame, params = _replay(params)
     session = frame[frame.index.date == pd.Timestamp(chart.session_date).date()]
     positions = {ts.isoformat(): index for index, ts in enumerate(session.index)}
 
@@ -231,16 +231,44 @@ def _assemble() -> DemoTimeline:
     )
 
 
-@lru_cache(maxsize=1)
-def build_demo_timeline() -> DemoTimeline:
-    """Build (once per process) the full demo timeline."""
-    return _assemble()
+def default_demo_params() -> StrategyParams:
+    """The parameters the C1 demo always used."""
+    return StrategyParams(ema_cross_lookback=5)
 
 
 _BUILD_LOCK = threading.Lock()
+_CACHE: dict[str, DemoTimeline] = {}
+_CACHE_SIZE = 4
+
+
+def _cache_key(params: StrategyParams) -> str:
+    return params.model_dump_json()
+
+
+def build_demo_timeline_for(params: StrategyParams) -> DemoTimeline:
+    """Timeline for specific parameters (the “test my settings” replay).
+
+    Cached by the full parameter snapshot, so clicking the button repeatedly is
+    cheap and a settings change produces a fresh replay. Still memory-only.
+    """
+    key = _cache_key(params)
+    with _BUILD_LOCK:
+        cached = _CACHE.get(key)
+        if cached is not None:
+            return cached
+    timeline = _assemble(params)
+    with _BUILD_LOCK:
+        while len(_CACHE) >= _CACHE_SIZE:
+            _CACHE.pop(next(iter(_CACHE)))
+        _CACHE[key] = timeline
+    return timeline
+
+
+def build_demo_timeline() -> DemoTimeline:
+    """The default practice day (same output as ``kite-alerts demo``)."""
+    return build_demo_timeline_for(default_demo_params())
 
 
 def warm_demo_timeline() -> DemoTimeline:
     """Thread-safe first build (FastAPI may serve two requests concurrently)."""
-    with _BUILD_LOCK:
-        return build_demo_timeline()
+    return build_demo_timeline()

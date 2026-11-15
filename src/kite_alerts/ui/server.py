@@ -80,7 +80,7 @@ def run_ui(
     """Run the dashboard until Ctrl-C. Raises ``ConfigError`` for a bad bind/port."""
     host = validate_bind_host(host)
     port = validate_port(port)
-    context = build_context(env_file=env_file, db_path=db_path)
+    context = build_context(env_file=env_file, db_path=db_path, port=port)
     app = create_app(context)
     url = dashboard_url(host, port)
 

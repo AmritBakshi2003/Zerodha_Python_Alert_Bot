@@ -48,7 +48,7 @@ SELL and one BUY with reasons — the same output as `demo_output.txt`.
 | `kite-alerts login` | Exchange a `request_token` for today's access token and write it to `.env`. |
 | `kite-alerts config-check` | Validate configuration, print the redacted snapshot and any warnings. |
 | `kite-alerts demo` | Offline synthetic replay; needs no account, no network, no credentials. |
-| `kite-alerts ui` | Local dashboard: read-only history, demo player, test alert. Requires the optional `ui` extra. |
+| `kite-alerts ui` | Local dashboard: sidebar pages, practice demo, settings, guided Kite login, history, test alert. Requires the optional `ui` extra. |
 | `kite-alerts replay --csv PATH` | Replay a CSV of 1-minute candles through the *same* `Engine`. |
 | `kite-alerts replay --from-kite` | Replay recent Kite history for one symbol. |
 | `kite-alerts --version` | Print the version. |
@@ -58,35 +58,102 @@ uses no costs/slippage/sizing, and adds `+5m/+15m/+30m` forward returns per aler
 
 ## Using the dashboard
 
-The dashboard is a local web page for watching the bot. It is optional, reads your
-data, and never places orders.
+The dashboard is a local web page for watching the bot, trying the rules and
+setting up your own Kite connection. It is optional, reads your data, and never
+places orders.
 
 ```bash
 pip install -e ".[ui]"      # one-time: adds FastAPI + uvicorn
 kite-alerts ui --open       # opens http://127.0.0.1:8765 in your browser
 ```
 
-What each part does:
+The left sidebar switches pages (each page has its own `#/` address, so a
+bookmark or refresh keeps you there):
 
-- **Dashboard** — says plainly whether the bot is running (it asks the bot's
-existing `/health` endpoint), shows today's BUY and SELL alert counts, and keeps
-a live feed of the latest alerts with the full reason.
-- **Demo player** — press Play to replay a practice trading day through the real
-alert engine at 1x, 5x, 20x or 60x. It draws a candle chart with EMA lines, RSI
-and MACD panels, the opening-range band, and a BUY/SELL marker on the exact
-candle that fired each alert. Each alert card shows which rules agreed. It works
-with no account and no internet, and never writes to your alert history.
-- **Alert history** — the alerts the bot recorded, filtered by symbol and side,
-with pages. The database is opened read-only, so this page can never change it.
-- **Test alert** — sends a clearly labelled TEST message through the channels in
-your `.env` so you can check your phone. Limited to one every 10 seconds, and
-never recorded as a real alert.
-- **Help** — version, mode, the alerts-only statement, and a first-day checklist.
+- **Dashboard** — whether the bot is running (it asks the bot's existing
+  `/health` endpoint), today's BUY and SELL counts, and a live feed of the latest
+  alerts with the full reason.
+- **Practice** — the demo player, always labelled DEMO. Play, pause and change
+  speed to replay a made-up trading day through the real alert engine. A first-run
+  welcome panel (dismissed once, remembered in this browser) explains the path:
+  try Practice, set up alerts, connect Kite. **Test my settings** replays the same
+  day through the engine with *your saved parameters* and shows how many BUY/SELL
+  alerts result and which rules agreed. Nothing here is written to your alert
+  history.
+- **Alerts** — the alerts the bot recorded, filtered by symbol and side, with
+  pages. The database is opened read-only, so this page can never change it.
+- **Settings** — a form generated from the same pydantic models the bot uses,
+  grouped into Instruments, Alert rules, Notifications and Advanced. Labels,
+  help, ranges, choices and defaults come from the models. Save writes `.env`
+  atomically (temp file then replace), keeps comments and unknown keys, and keeps
+  the last five `.env.bak-<timestamp>` copies. Values are validated first; a
+  rejected save leaves the file untouched. **Check settings** runs the same
+  validation as `kite-alerts config-check`. Changes apply the next time the bot
+  starts; the dashboard and Practice use them immediately.
+- **Connect** — a four-step wizard for your own Kite Connect app: create it at
+  developers.kite.trade, copy the exact loopback Redirect URL it shows, paste the
+  API key and secret into write-only fields, then log in on Zerodha's own page.
+  There is also a manual `request_token` fallback, a connection status panel with
+  Disconnect, and a data-plan check that says whether your plan includes live
+  market data. See below.
+- **Help** — version, mode, the alerts-only statement, a first-day checklist and
+  short troubleshooting.
 
-The dashboard only listens on your own computer (`127.0.0.1`). Use `--port` to
-change the port and `--db` to point at a different database. Stop it with Ctrl-C
-in the window where you started it. Starting the bot is still a separate command
+Notification setup is on Settings: a Telegram guide (@BotFather, press Start),
+**Find my chat id** (reads your bot's recent updates and fills the field in),
+Slack webhook instructions, channel checkboxes (the terminal is always on), and
+one **Send test alert** button that reports each channel separately. The test is
+limited to one every 10 seconds and is never recorded as a real alert.
+
+### Bring your own Kite key
+
+Kite Connect is personal-use, so this project never ships a shared API key.
+Each person creates **their own** app at [developers.kite.trade](https://developers.kite.trade)
+with their own API key and secret, and pays Zerodha directly for whatever plan
+they need. Login works on the free Personal tier, but **live market data needs a
+paid plan**; check developers.kite.trade for current pricing. The dashboard never
+shows a price and never charges you.
+
+Step 2 of the wizard shows the redirect URL for the port you are actually using,
+for example `http://127.0.0.1:8765/callback`. Paste that into the Kite app's
+Redirect URL field exactly. When you press **Connect to Zerodha**, this app opens
+Zerodha's login page in your browser and never sees or stores your password or
+TOTP. Zerodha redirects back with a one-time `request_token`; the dashboard
+accepts it only while a connect attempt is pending, only with the matching state
+value, and only within ten minutes, then exchanges it using the same code as
+`kite-alerts login`. The daily access token is saved in `.env` exactly as the CLI
+saves it.
+
+If your Kite app refuses a loopback redirect URL, use the **Paste request_token
+manually** box: after logging in, copy the `request_token` value from the address
+bar and paste it there while the attempt is still pending.
+
+Files the dashboard may write: `.env` (settings and tokens, atomically) and
+`.env.bak-<timestamp>` backups (the newest five). Both match `.gitignore`.
+Secrets are write-only: the page can show "set" or "not set", never the value,
+and no endpoint returns one.
+
+The dashboard only listens on your own computer (`127.0.0.1`), validates the
+`Host` header, serves a restrictive CSP with no CDN, requires a same-origin
+request for every change, and never logs a token or webhook URL. Its only Kite
+calls are read-only: login URL, session exchange, profile, one `ltp` probe and
+token invalidation. Starting the bot is still a separate command
 (`kite-alerts run`); this version does not start or stop it from the page.
+
+Use `--port` to change the port (then update the redirect URL in your Kite app)
+and `--db` to point at a different database. Stop the dashboard with Ctrl-C in
+the window where you started it.
+
+### Dashboard troubleshooting
+
+| What you see | What to do |
+|---|---|
+| Zerodha says **Redirect URL mismatch** | The URL in the Kite app must match the Connect page exactly, including the port. Copy it again from step 2. |
+| **Token expired — reconnect** | Kite tokens expire around 06:00 IST. Press Connect again; the bot needs a fresh token each morning too. |
+| **Your Kite plan has no market data** | Login worked, but the plan has no live quotes. The delayed chart is used instead; upgrade at developers.kite.trade if you want live data. |
+| **Port in use** | Something else is on 8765. Run `kite-alerts ui --port 8766`, then put `http://127.0.0.1:8766/callback` into your Kite app. |
+| Settings save says **nothing was saved** | One field is invalid. The message names it; fix that field and save again. The old `.env` is intact. |
+| **Telegram has no recent messages** | Open your bot in Telegram, press Start, then press Find my chat id again. |
 
 ## Signal logic
 

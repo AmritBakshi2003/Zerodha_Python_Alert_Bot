@@ -125,6 +125,14 @@ def test_only_market_data_kite_methods_are_used() -> None:
         "history_calls",
         # our own credentials object (KiteCredentials), not the SDK client
         "require",
+        # our own KiteConnectService (context.kite), not the SDK client
+        "start",
+        "finish",
+        "session",
+        "disconnect",
+        "data_sources",
+        "pending_login_url",
+        "cancel_pending",
     }
     pattern = re.compile(r"\b(?:kite|self\._kite|active_kite)\.([a-z_]+)\(")
     found: set[str] = set()
@@ -138,3 +146,47 @@ def test_only_market_data_kite_methods_are_used() -> None:
 def test_package_documents_alerts_only() -> None:
     docstring = (kite_alerts.__doc__ or "").lower()
     assert "alerts only" in docstring or "alert" in docstring
+
+
+def test_c2_modules_are_scanned_for_order_apis() -> None:
+    """The C2 pages (settings, connect, practice) ship more JS than C1 did."""
+    suffixes = {path.name for path in ui_asset_files()}
+    assert {"settings.js", "connect.js", "practice.js", "dom.js"} <= suffixes
+
+
+_INJECTION_SINKS = ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write")
+
+
+def test_ui_never_uses_a_markup_injection_sink() -> None:
+    offenders: list[str] = []
+    for path in ui_asset_files():
+        if "vendor" in path.parts:
+            continue  # third-party chart library, licensed and unmodified
+        if path.suffix.lower() not in {".js", ".mjs", ".html"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        offenders.extend(f"{path.name}: {sink}" for sink in _INJECTION_SINKS if sink in text)
+    assert not offenders, f"unescaped DOM sink(s): {offenders}"
+
+
+def test_notification_hosts_only_live_on_the_server() -> None:
+    """The browser talks to this dashboard, never to Telegram or Slack."""
+    hosts = ("api.telegram.org", "hooks.slack.com")
+    offenders: list[str] = []
+    for path in ui_asset_files():
+        if path.suffix.lower() not in {".js", ".mjs", ".html", ".css"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        offenders.extend(f"{path.name}: {host}" for host in hosts if host in text)
+    assert not offenders, offenders
+
+
+def test_no_cdn_in_any_ui_asset() -> None:
+    forbidden = ("cdn.", "unpkg", "jsdelivr", "googleapis", "fonts.gstatic")
+    offenders: list[str] = []
+    for path in ui_asset_files():
+        if path.suffix.lower() not in {".js", ".mjs", ".html", ".css"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        offenders.extend(f"{path.name}: {host}" for host in forbidden if host in text)
+    assert not offenders, f"external asset host(s) referenced: {offenders}"

@@ -80,6 +80,10 @@ class StatusService:
         self._probe = probe
         self._clock = clock or SystemClock()
 
+    def update_settings(self, settings: Settings | None) -> None:
+        """Follow a settings save without rebuilding the whole context."""
+        self._settings = settings
+
     def endpoint(self) -> str:
         if self._settings is None:
             return ""
