@@ -37,6 +37,8 @@ dependencies = [
 ui = [
   "fastapi>=0.110,<1",
   "uvicorn>=0.29,<1",
+  # Delayed NSE candles. Apache-2.0; imported lazily so the bot never needs it.
+  "yfinance>=0.2.54,<0.3",
 ]
 # `dev` repeats the ui packages so `pip install -e ".[dev]"` runs the UI tests.
 dev = [
@@ -51,6 +53,7 @@ dev = [
   "pre-commit>=3.7",
   "fastapi>=0.110,<1",
   "uvicorn>=0.29,<1",
+  "yfinance>=0.2.54,<0.3",
   # Starlette's TestClient (used only by the UI tests) needs httpx.
   "httpx>=0.27,<1",
 ]
@@ -132,7 +135,7 @@ disallow_untyped_defs = true
 disallow_any_unimported = false
 
 [[tool.mypy.overrides]]
-module = ["kiteconnect.*", "dotenv.*", "yaml.*", "pandas"]
+module = ["kiteconnect.*", "dotenv.*", "yaml.*", "pandas", "yfinance.*"]
 ignore_missing_imports = true
 
 # --------------------------------------------------------------------------- #

@@ -1,9 +1,12 @@
-# Dashboard design (C1 + C2 shipped, C3 planned)
+# Dashboard design (C1 + C2 + C3 shipped)
 
 C1 shipped a local, read-only dashboard with an offline demo player. C2 adds the
 sidebar layout, the settings form, guided notifications, and the
-"bring your own Kite key" connection flow. C3 (chart workstation: chart types,
-timeframes, watchlist, live ticks) is still planned and deliberately absent.
+"bring your own Kite key" connection flow. C3 adds the Chart landing page:
+seven chart types, 1/3/5/15-minute timeframes, server-computed indicators, two
+free honest data sources (delayed NSE and a crypto showcase), the Demo replay,
+a watchlist, a five-rule signal meter, an IST market clock and PNG export.
+Kite live streaming remains C4.
 
 Nothing here changes the signal rules, the engine, or the trading path: the
 project remains alerts-only and has no order API.
@@ -24,11 +27,19 @@ kite_alerts/ui/
 ├── kite_connect.py     pending login, token exchange, session, data probe
 ├── notifications.py    Telegram getUpdates -> chat id
 ├── server.py           validate host/port, build the app, run uvicorn
+├── chart/
+│   ├── types.py        Candle/SourceSeries/SymbolInfo + plain errors
+│   ├── transforms.py   true epochs, 3m resampling, Heikin-Ashi
+│   ├── resilience.py   cache, coalescing, jittered backoff, breaker
+│   ├── symbols.py      NSE/NIFTY/BANK NIFTY -> Yahoo tickers; NFO refused
+│   ├── sources.py      DelayedNSE, CryptoShowcase, Demo, Kite placeholder
+│   └── service.py      indicators, freshness, signal meter, clock, watchlist
 └── static/
-    ├── index.html      sidebar + six page sections
-    ├── styles.css      light/dark, keyboard focus, responsive
+    ├── index.html      sidebar + seven page sections
+    ├── styles.css      light/dark, keyboard focus, responsive, badges
     ├── app.js          hash router, dashboard, history, help
     ├── dom.js          textContent-only DOM helpers and the fetch wrapper
+    ├── chart.js        Chart page: picker, series, polling, export, meter
     ├── practice.js     demo player, first-run welcome, "Test my settings"
     ├── settings.js     generated form, save/check, notification guide
     ├── connect.js      wizard, status, manual fallback, data sources
@@ -47,12 +58,13 @@ state without a restart.
 
 ## Layout and routing
 
-`index.html` is one document with a `<nav aria-label="Pages">` sidebar and six
+`index.html` is one document with a `<nav aria-label="Pages">` sidebar and seven
 `<section data-page="…">` panels. The hash is the only router state:
 
-`#/dashboard`, `#/practice`, `#/alerts`, `#/settings`, `#/connect`, `#/help`.
+`#/chart`, `#/dashboard`, `#/practice`, `#/alerts`, `#/settings`, `#/connect`,
+`#/help`.
 
-`app.js` maps an unknown or empty hash to Dashboard, toggles `hidden`, sets
+`app.js` maps an unknown or empty hash to Chart, toggles `hidden`, sets
 `aria-current="page"` on the active link, updates the title, and lazily
 initialises each page module on first visit. A skip link targets `<main
 tabindex="-1">`; every control is a real button/input/select with a label, and
@@ -84,7 +96,12 @@ edits.
 | `/api/kite/manual-token` | POST | same exchange for a pasted `request_token` |
 | `/api/kite/session` | GET | `Connected as <name>` / not connected / expired |
 | `/api/kite/disconnect` | POST | invalidate + clear the saved token |
-| `/api/data-sources` | GET | availability + plain reason per source (for C3) |
+| `/api/data-sources` | GET | availability, badge, notice and reason per source |
+| `/api/chart/symbols` | GET | allowlisted symbols for a source |
+| `/api/chart/candles` | GET | OHLCV + indicators, freshness, signal |
+| `/api/chart/live` | GET | the last two candles for the forming-candle poll |
+| `/api/chart/clock` | GET | IST open/pre-open/closed + countdown |
+| `/api/chart/watchlist` | GET/POST/DELETE | read/add/remove symbols |
 | `/api/notifications/telegram/chat-id` | POST | read the bot's recent update |
 | `/api/practice/check` | POST | replay the demo with saved parameters |
 
@@ -206,8 +223,54 @@ the write-only credential pills. Disconnect calls `invalidate_access_token`
 | empty/other | false | plain "could not confirm" message |
 
 Delayed NSE, the crypto showcase and the practice demo are always reported
-available with a reason. Only the status model and endpoint ship in C2; C3 will
-consume them.
+available with a reason. Each source now also carries `badge`, `enabled`,
+`notice` and `supports_oi`; `kite_live.enabled` is always **false** in C3, even
+when the account has a market-data plan.
+
+## Chart workstation
+
+**One source interface, three real adapters.** `chart/sources.py` defines
+`ChartSource`: `id`, `label`, `badge`, `supports_oi`, `enabled`, `session_based`,
+`symbols()` and `fetch()`. `DelayedNSESource` maps NSE equities to `<TICKER>.NS`
+and the two indices to `^NSEI`/`^NSEBANK` through `yfinance` (Apache-2.0, lazily
+imported); NFO is refused with a reason. `CryptoShowcaseSource` calls Kraken's
+fixed public OHLC host with allowlisted pairs (`BTC`, `ETH`); `DemoSource` reuses
+`synthetic_day()`; `KiteLiveSource` is disabled and its `fetch` only explains
+that C4 will add streaming. See [data-sources.md](data-sources.md).
+
+**Normalised data.** A `Candle` carries a true UTC epoch second plus the original
+values; the browser formats IST with `Intl.DateTimeFormat` for the axis, tooltip
+and freshness line. 3-minute candles are resampled from 1-minute ones.
+Heikin-Ashi is a tested pure function; all indicators come from
+`kite_alerts.indicators` with the saved `StrategyParams`, using
+`indicator_frame()` so the chart values are the same series the rules see.
+
+**Resilience.** Every adapter uses `ProviderCache`: 5–10 s TTL (Kraken ~1–1.5 s),
+one in-flight fetch per key with a lock, exponential backoff with jitter, and a
+circuit breaker after three failures. On failure the last candles remain on the
+page with a visible "stale since" mark and a retry message; no provider URL or
+body is logged or returned. `ChartService` validates source/symbol/interval/limit
+before any fetch.
+
+**Honesty.** `/api/chart/candles` returns `badge`, `source_label`,
+`freshness.latest_ist`, `age_seconds`, `age_text`, `checked_at`, the measured
+`delay_seconds`, `stale`/`stale_since`, `message` and the market clock state.
+The page has a permanent high-contrast badge, and PNG exports burn the badge and
+its plain-language meaning into the image. The signal meter shows the five rules
+as status lights with a summary such as "3 of 5 agree (bullish), waiting for
+MACD" and the exact label "Informational, based on <source> data. No alerts are
+sent from this source." ORB is unavailable for crypto; OI is unavailable for both
+free sources.
+
+**Watchlist.** Configured `SYMBOLS` are mapped per source; user-added NSE symbols
+are stored atomically in `data/chart_watchlist.json` (git-ignored), capped at 10.
+Rows show last price, change %, sparkline and freshness; the click target loads
+the chart. The endpoint caches rows for 15 seconds; provider caches do the rest.
+
+**No alert path.** `chart/` never imports the engine, notifier, `AlertStore` or
+history. Tests statically assert those imports are absent and call every chart
+route with alert sending patched to fail, then assert the alert store counts are
+unchanged.
 
 ## Guided notifications
 
@@ -257,6 +320,14 @@ No test reaches the network. `tests/unit/ui_support_c2.py` provides a temporary
 `.env`, `FakeKite`/`FakeKiteFactory`, `FakeTelegram`/`FakeResponse` and a context
 builder; `FakeMonotonic` controls the ten-minute state window and the caches.
 
+C3 tests use `tests/unit/ui_support_c3.py` (fixed fake candles, a fake source and
+a frozen clock). They cover Heikin-Ashi known values, 3-minute resampling, symbol
+mapping (including NFO refusal), indicator parity with the bot functions,
+freshness/age and stale states, cache TTL/backoff/breaker/coalescing, symbol and
+parameter validation/SSRF, disabled Kite, crypto parsing and errors, watchlist
+persistence, holiday/weekend/open/pre-open clock states, static badges and picker
+disabling, and alert isolation.
+
 Covered: successful connect; missing/wrong/expired state; missing/cancelled
 attempt; manual fallback; exchange and network errors; expired/unreachable
 session; disconnect; every data-plan outcome and the cache; settings metadata,
@@ -275,8 +346,8 @@ missing market-data permission, real Telegram delivery, the owner's browser
 rendering and Windows firewall behaviour. These are documented rather than
 guessed.
 
-## Explicitly out of scope for C2
+## Explicitly out of scope for C3
 
-Chart-type switching, timeframes, a watchlist, live ticks (C3); starting or
-stopping the bot from the page (C3); CSV replay (C3); any order, position,
-holding or trade functionality (never); a shared Kite API key (never).
+Kite live websocket streaming (C4); CSV replay; starting or stopping the bot
+from the page; the journal. Any order, position, holding or trade functionality
+is out of scope forever, as is a shared Kite API key.

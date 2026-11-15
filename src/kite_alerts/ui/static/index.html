@@ -25,6 +25,7 @@
 
         <nav aria-label="Pages">
           <ul class="side-nav">
+            <li><a href="#/chart" data-route="chart">Chart</a></li>
             <li><a href="#/dashboard" data-route="dashboard">Dashboard</a></li>
             <li><a href="#/practice" data-route="practice">Practice</a></li>
             <li><a href="#/alerts" data-route="alerts">Alerts</a></li>
@@ -42,7 +43,7 @@
 
       <div class="main-col">
         <header class="topbar">
-          <p class="topbar-title" id="topbar-title">Dashboard</p>
+          <p class="topbar-title" id="topbar-title">Chart</p>
           <p class="connection-chip" id="connection-chip" data-state="off">
             <span class="chip-dot" aria-hidden="true"></span>
             <span id="connection-chip-text">Kite: not connected</span>
@@ -51,7 +52,144 @@
 
         <main id="main" tabindex="-1">
           <!-- ---------------------------------------------------------- dashboard -->
-          <section class="page" id="page-dashboard" data-page="dashboard"
+          <section class="page page-chart" id="page-chart" data-page="chart"
+                   aria-labelledby="chart-title">
+            <div class="page-head chart-head">
+              <div>
+                <h1 id="chart-title">Chart</h1>
+                <p class="page-note" id="chart-subtitle">
+                  Read-only NSE and crypto charts. Delayed data is never live data.
+                </p>
+              </div>
+              <span class="source-badge" id="chart-badge" data-badge="DELAYED">DELAYED</span>
+            </div>
+
+            <div class="chart-strip" aria-label="Chart status">
+              <p class="strip-item"><span class="status-dot" id="chart-bot-dot" data-state="stopped"
+                aria-hidden="true"></span><span id="chart-bot-status">Bot: checking…</span></p>
+              <p class="strip-item">Today: <strong id="chart-count-buys">0</strong> BUY /
+                <strong id="chart-count-sells">0</strong> SELL</p>
+              <p class="strip-item" id="chart-clock-strip">NSE: checking…</p>
+              <p class="strip-item" id="chart-alert-count">Alerts: 0</p>
+              <span class="constraint-chip">Alerts only — no orders</span>
+            </div>
+
+            <details class="chart-alert-panel">
+              <summary>Latest alerts <span class="muted small" id="chart-alert-summary"></span></summary>
+              <ul class="alert-feed" id="chart-alert-feed" aria-live="polite"></ul>
+            </details>
+
+            <article class="panel chart-panel" id="chart-panel">
+              <div class="chart-controls">
+                <label class="control" for="chart-source">Source
+                  <select id="chart-source"></select>
+                </label>
+                <label class="control" for="chart-symbol">Symbol
+                  <select id="chart-symbol"></select>
+                </label>
+                <label class="control" for="chart-interval">Timeframe
+                  <select id="chart-interval">
+                    <option value="1">1 minute</option>
+                    <option value="3">3 minutes</option>
+                    <option value="5" selected>5 minutes</option>
+                    <option value="15">15 minutes</option>
+                  </select>
+                </label>
+                <label class="control" for="chart-type">Chart type
+                  <select id="chart-type">
+                    <option value="candles">Candles</option>
+                    <option value="hollow">Hollow candles</option>
+                    <option value="heikin">Heikin-Ashi</option>
+                    <option value="bars">OHLC bars</option>
+                    <option value="line">Line</option>
+                    <option value="area">Area</option>
+                    <option value="baseline">Baseline</option>
+                  </select>
+                </label>
+                <div class="control-group" role="group" aria-label="Chart options">
+                  <button type="button" class="button button-quiet" id="chart-export">Export PNG</button>
+                  <button type="button" class="button button-quiet" id="chart-fullscreen">Fullscreen</button>
+                  <label class="check-inline"><input type="checkbox" id="chart-log"> Log scale</label>
+                </div>
+              </div>
+
+              <p class="chart-source-note" id="chart-source-note"></p>
+
+              <details class="indicator-box" id="indicator-box">
+                <summary>Indicators</summary>
+                <div class="indicator-toggles">
+                  <label><input type="checkbox" data-indicator="ema" checked> EMA</label>
+                  <label><input type="checkbox" data-indicator="rsi" checked> RSI panel</label>
+                  <label><input type="checkbox" data-indicator="macd" checked> MACD panel</label>
+                  <label><input type="checkbox" data-indicator="volume" checked> Volume</label>
+                  <label><input type="checkbox" data-indicator="orb" checked> Opening range</label>
+                  <label><input type="checkbox" data-indicator="oi" checked> Open interest</label>
+                </div>
+              </details>
+
+              <div class="chart-stage">
+                <div class="chart chart-main" id="chart-main" role="img"
+                     aria-label="Price chart with server-computed indicators"></div>
+                <div class="chart-tooltip" id="chart-tooltip" hidden></div>
+              </div>
+
+              <div class="chart-freshness">
+                <p id="chart-freshness">Loading the latest candle…</p>
+                <p id="chart-checked" class="muted small"></p>
+                <p id="chart-delay" class="small muted"></p>
+              </div>
+              <p class="chart-message" id="chart-message" role="status"></p>
+              <p class="chart-stale" id="chart-stale" hidden></p>
+            </article>
+
+            <div class="chart-lower">
+              <article class="panel signal-panel">
+                <div class="panel-head">
+                  <h2>Signal meter</h2>
+                  <p class="panel-note" id="signal-label">
+                    Informational only. No alerts are sent from this source.
+                  </p>
+                </div>
+                <p class="signal-summary" id="signal-summary">Loading…</p>
+                <ul class="signal-rules" id="signal-rules"></ul>
+              </article>
+
+              <article class="panel watchlist-panel">
+                <div class="panel-head">
+                  <h2>Watchlist</h2>
+                  <p class="panel-note">Click a row to load it on the chart.</p>
+                </div>
+                <ul class="watchlist" id="watchlist"></ul>
+                <p class="watchlist-empty muted" id="watchlist-empty">Loading…</p>
+                <div class="watchlist-add" id="watchlist-add">
+                  <label class="control" for="watchlist-symbol">Add NSE symbol
+                    <input type="text" id="watchlist-symbol" placeholder="NSE:INFY"
+                           autocomplete="off" maxlength="40">
+                  </label>
+                  <button type="button" class="button button-quiet" id="watchlist-add-button">Add</button>
+                </div>
+                <p class="test-status" id="watchlist-status" role="status"></p>
+              </article>
+
+              <article class="panel clock-panel">
+                <h2>Market clock (IST)</h2>
+                <p class="clock-state" id="clock-state">Checking…</p>
+                <p class="clock-next" id="clock-next"></p>
+                <p class="muted small" id="clock-session"></p>
+                <p class="notice notice-quiet small" id="clock-notice" hidden></p>
+              </article>
+            </div>
+
+            <div class="badge-legend" aria-label="Data honesty badges">
+              <span>Badges used on this page:</span>
+              <span class="source-badge" data-badge="DELAYED">DELAYED</span>
+              <span class="source-badge" data-badge="SHOWCASE">SHOWCASE</span>
+              <span class="source-badge" data-badge="DEMO">DEMO</span>
+              <span class="source-badge" data-badge="LIVE">LIVE</span>
+            </div>
+          </section>
+
+          <section class="page" id="page-dashboard" data-page="dashboard" hidden
                    aria-labelledby="dashboard-title">
             <div class="page-head">
               <h1 id="dashboard-title">Dashboard</h1>

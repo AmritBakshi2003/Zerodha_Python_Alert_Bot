@@ -8,9 +8,11 @@ import { alertRow, api, byId, clear, formatTimestamp, make, reasonText, show } f
 import { initConnect, onShowConnect } from "./connect.js";
 import { initPractice, onShowPractice } from "./practice.js";
 import { initSettings, onShowSettings } from "./settings.js";
+import { onShowChart } from "./chart.js";
 
-const ROUTES = ["dashboard", "practice", "alerts", "settings", "connect", "help"];
+const ROUTES = ["chart", "dashboard", "practice", "alerts", "settings", "connect", "help"];
 const TITLES = {
+  chart: "Chart",
   dashboard: "Dashboard",
   practice: "Practice",
   alerts: "Alerts",
@@ -32,7 +34,7 @@ let aboutLoaded = false;
 
 function currentRoute() {
   const raw = window.location.hash.replace(/^#\/?/, "");
-  return ROUTES.indexOf(raw) >= 0 ? raw : "dashboard";
+  return ROUTES.indexOf(raw) >= 0 ? raw : "chart";
 }
 
 function setChip(configured, connected) {
@@ -88,6 +90,9 @@ function showPage(route, focus) {
     stopDashboardTimer();
   }
 
+  if (route === "chart") {
+    onShowChart();
+  }
   if (route === "alerts") {
     loadHistory(historyState.page);
   }
