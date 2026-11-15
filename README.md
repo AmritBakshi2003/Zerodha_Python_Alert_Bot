@@ -148,7 +148,9 @@ The Chart page's delayed NSE data comes from the open-source `yfinance` package
 and is **unofficial and delayed**; it is never live Kite data. The crypto
 showcase uses a free, keyless public feed and is labelled `SHOWCASE`, not NSE.
 The meaning, delay, limits and provider licences are documented in
-[docs/data-sources.md](docs/data-sources.md). Kite live streaming is C4.
+[docs/data-sources.md](docs/data-sources.md). Real-time Kite live streaming (Phase C4)
+and the offline simulator are documented in [docs/live-feed.md](docs/live-feed.md).
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the project build history and future development roadmap.
 
 The dashboard only listens on your own computer (`127.0.0.1`), validates the
 `Host` header, serves a restrictive CSP with no CDN, requires a same-origin
@@ -275,8 +277,10 @@ src/kite_alerts/
 ├── persistence/    SQLite alert store (dedup ledger + engine state)
 ├── observability/  logging + redaction, Prometheus metrics, /health server
 ├── backtest/       replay through the same Engine, forward-return summary
+├── ui/             FastAPI dashboard, chart workstation, live feed & simulator
 ├── cli/            `kite-alerts` entry point
 └── demo.py         offline synthetic replay
+docs/               ROADMAP.md, data-sources.md, live-feed.md, ui-design.md
 legacy/             the original single-file prototype, reference only
 ```
 
@@ -352,8 +356,8 @@ when a contract has ≤2 days left.
 ```bash
 pip install -e ".[dev]"
 pytest --cov=kite_alerts          # coverage threshold is enforced (85%)
-ruff check && black --check src tests && mypy
-pre-commit install                # ruff, black, hygiene hooks + alerts-only guard
+ruff check && ruff format --check && mypy src/kite_alerts
+pre-commit install                # ruff, formatting, hygiene hooks + alerts-only guard
 ```
 
 `tests/fakes/fake_kite.py` provides `FakeKite` / `FakeTicker`, so the entire live
