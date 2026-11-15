@@ -1,6 +1,6 @@
 """The local FastAPI application.
 
-API layout (C2 slots into this without moving anything):
+API layout:
 
 ============================  ======  ==========================================
 Route                         Method  Purpose
@@ -12,11 +12,20 @@ Route                         Method  Purpose
 ``/api/demo/stream``          GET     the same replay as NDJSON events
 ``/api/test-alert``           POST    one TEST message, rate limited
 ``/api/about``                GET     version, mode, alerts-only statement
+``/api/settings``             GET     field metadata, never a secret value
+``/api/settings``             PUT     validate + atomic write to .env
+``/api/settings/check``       POST    the same validation as config-check
+``/api/kite/login``           POST    start Zerodha's own login redirect
+``/callback``                 GET     loopback redirect: store the daily token
+``/api/kite/manual-token``    POST    fallback: paste a request_token
+``/api/kite/session``         GET     connected / expired / not connected
+``/api/kite/disconnect``      POST    clear the saved token
+``/api/data-sources``         GET     availability + reason per source
+``/api/notifications/telegram/chat-id``  POST  find the user's chat id
+``/api/practice/check``       POST    replay the demo with the saved settings
 ============================  ======  ==========================================
 
-C2 adds ``/api/settings`` (GET metadata, PUT values) and ``/api/kite/login``;
-C3 adds ``/api/replay`` and ``/api/run`` (start/stop + log stream). See
-``docs/ui-design.md``.
+C3 adds ``/api/replay`` and ``/api/run`` (start/stop + log stream).
 """
 
 from __future__ import annotations
@@ -30,15 +39,29 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
 
 from .. import __version__
 from ..config.settings import Settings, load_settings
 from ..core.errors import ConfigError
-from .demo_player import DemoTimeline, warm_demo_timeline
+from .demo_player import (
+    DemoTimeline,
+    build_demo_timeline_for,
+    warm_demo_timeline,
+)
 from .history import AlertHistoryReader
+from .kite_connect import (
+    STATE_COOKIE,
+    ConnectError,
+    KiteConnectService,
+    default_kite_factory,
+)
+from .notifications import TelegramSetupService
 from .security import SecurityMiddleware, require_same_origin
+from .settings_schema import connect_payload, settings_payload
+from .settings_store import SettingsStore
 from .status import StatusService, http_probe
 from .test_alert import NotifierFactory, TestAlertService
 
@@ -49,7 +72,10 @@ INDEX_FILE = STATIC_DIR / "index.html"
 LICENSE_FILE = STATIC_DIR / "vendor" / "lightweight-charts" / "LICENSE"
 NOTICE_FILE = STATIC_DIR / "vendor" / "lightweight-charts" / "NOTICE"
 
-MODE = "Read-only dashboard with an offline demo player. " "The live feed is not started from here."
+MODE = (
+    "Read-only dashboard with a practice replay, a guided Kite connection and settings. "
+    "The live alert feed is started with `kite-alerts run`, not from here."
+)
 
 ALERTS_ONLY_STATEMENT = (
     "This tool only sends alerts. It never places, modifies or cancels orders, "
@@ -71,17 +97,37 @@ ATTRIBUTION = {
 }
 
 FIRST_DAY_CHECKLIST = (
-    "Copy .env.example to .env and fill in KITE_API_KEY and KITE_API_SECRET.",
-    "Add the instruments you watch, e.g. SYMBOLS=NSE:RELIANCE,NFO:NIFTY-FUT.",
-    "Run `kite-alerts config-check` to confirm the settings are valid.",
-    "Run `kite-alerts login` each morning — the token expires around 06:00 IST.",
-    "Run `kite-alerts run` in its own window to start the alerts.",
-    "Press the dashboard's Refresh status button; it should say “Bot running”.",
-    "Try the demo player here first: it needs no account and no internet.",
+    "Open Connect and create your own Kite Connect app at developers.kite.trade.",
+    "Copy this dashboard's redirect URL into that app's settings.",
+    "Paste your own API key and secret on Connect, then log in on Zerodha's page.",
+    "On Settings, choose the instruments you watch and enable Telegram or Slack.",
+    "Run `kite-alerts config-check` (or press Check settings) to confirm the file.",
+    "Run `kite-alerts run` in its own window; the dashboard only watches it.",
+    "Try the Practice page first: it needs no account and no internet.",
+)
+
+NO_SETTINGS_MESSAGE = (
+    "Your settings could not be read. The practice replay still works, but connecting, "
+    "saving and status need a valid .env."
 )
 
 
-@dataclass(frozen=True, slots=True)
+class SettingsUpdate(BaseModel):
+    """A partial settings update, keyed by environment variable name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class ManualToken(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_token: str = ""
+    state: str = ""
+
+
+@dataclass
 class UiContext:
     """Everything the routes need, injectable for tests."""
 
@@ -92,6 +138,53 @@ class UiContext:
     test_alerts: TestAlertService
     demo: Callable[[], DemoTimeline] = warm_demo_timeline
     version: str = field(default=__version__)
+    env_file: Path = Path(".env")
+    port: int = 8765
+    settings_store: SettingsStore | None = None
+    kite: KiteConnectService | None = None
+    telegram: TelegramSetupService | None = None
+    kite_factory: Callable[[str, str], Any] = default_kite_factory
+    http_get: Any = None
+
+    def __post_init__(self) -> None:
+        if self.settings_store is None:
+            self.settings_store = SettingsStore(self.env_file)
+        if self.kite is None:
+            self.kite = KiteConnectService(
+                self.settings_store,
+                lambda: self.settings,
+                port=self.port,
+                on_change=self.reload,
+                kite_factory=self.kite_factory,
+            )
+        if self.telegram is None:
+            kwargs: dict[str, Any] = {}
+            if self.http_get is not None:
+                kwargs["http_get"] = self.http_get
+            self.telegram = TelegramSetupService(lambda: self.settings, **kwargs)
+
+    # ------------------------------------------------------------------ lifecycle
+    def reload(self) -> None:
+        """Re-read .env after a save or a successful login."""
+        settings: Settings | None
+        error: str | None
+        try:
+            settings = load_settings(self.env_file)
+            error = None
+        except ConfigError as exc:
+            settings = None
+            error = str(exc)
+        self.settings = settings
+        self.settings_error = error
+        path = settings.db_path if settings is not None else self.history.path
+        self.history = AlertHistoryReader(path, clock=self.history.clock)
+        self.status.update_settings(settings)
+        self.test_alerts.settings = settings
+        self.test_alerts.settings_error = error
+
+    def session_status(self) -> dict[str, Any]:
+        assert self.kite is not None
+        return self.kite.session().as_dict()
 
 
 def build_context(
@@ -100,8 +193,11 @@ def build_context(
     db_path: str | Path | None = None,
     probe: Any | None = None,
     notifier_factory: NotifierFactory | None = None,
+    port: int = 8765,
+    kite_factory: Callable[[str, str], Any] = default_kite_factory,
+    http_get: Any = None,
 ) -> UiContext:
-    """Load settings once; a broken ``.env`` must not stop the demo from working."""
+    """Load settings once; a broken ``.env`` must not stop the practice replay."""
     settings: Settings | None = None
     settings_error: str | None = None
     try:
@@ -127,12 +223,57 @@ def build_context(
         history=history,
         status=status,
         test_alerts=test_alerts,
+        env_file=Path(env_file),
+        port=port,
+        kite_factory=kite_factory,
+        http_get=http_get,
     )
 
 
 def _ndjson(timeline: DemoTimeline) -> Iterator[str]:
     for event in timeline.events():
         yield json.dumps(event, separators=(",", ":"), allow_nan=False) + "\n"
+
+
+def _error(status: int, message: str, code: str = "error") -> JSONResponse:
+    return JSONResponse({"ok": False, "code": code, "message": message}, status_code=status)
+
+
+def _practice_payload(timeline: DemoTimeline, version: str) -> dict[str, Any]:
+    alerts = []
+    for alert in timeline.alerts:
+        alerts.append(
+            {
+                "side": alert.side,
+                "ts": alert.ts,
+                "time": alert.chart_time,
+                "price": alert.price,
+                "reasons": list(alert.reasons),
+                "rules": [dict(rule) for rule in alert.rules],
+                "rules_agreed": [
+                    str(rule["label"]) for rule in alert.rules if rule["status"] == "agree"
+                ],
+            }
+        )
+    total = len(timeline.alerts)
+    message = (
+        f"With your saved settings, this practice day produces {total} alert(s): "
+        f"{timeline.sells} SELL and {timeline.buys} BUY. Nothing is saved."
+    )
+    return {
+        "ok": True,
+        "demo": True,
+        "label": "DEMO",
+        "version": version,
+        "symbol": timeline.symbol,
+        "counts": {
+            "buys": timeline.buys,
+            "sells": timeline.sells,
+            "total": total,
+        },
+        "alerts": alerts,
+        "message": message,
+    }
 
 
 def create_app(context: UiContext) -> FastAPI:
@@ -146,6 +287,11 @@ def create_app(context: UiContext) -> FastAPI:
     )
     app.add_middleware(SecurityMiddleware)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    def require_settings() -> Settings:
+        if context.settings is None:
+            raise HTTPException(status_code=503, detail=NO_SETTINGS_MESSAGE)
+        return context.settings
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
@@ -161,6 +307,7 @@ def create_app(context: UiContext) -> FastAPI:
 
     @app.get("/api/about")
     def about() -> dict[str, Any]:
+        settings = context.settings
         return {
             "version": context.version,
             "mode": MODE,
@@ -169,7 +316,10 @@ def create_app(context: UiContext) -> FastAPI:
             "checklist": list(FIRST_DAY_CHECKLIST),
             "attribution": dict(ATTRIBUTION),
             "settings_error": context.settings_error,
+            "kite_configured": bool(settings and settings.kite.api_key),
+            "token_present": bool(settings and settings.kite.token),
             "demo": True,
+            "redirect_url": context.kite.redirect_url if context.kite else "",
         }
 
     @app.get("/api/status")
@@ -181,6 +331,7 @@ def create_app(context: UiContext) -> FastAPI:
             "mode": MODE,
             "alerts_only": True,
             "settings_error": context.settings_error,
+            "warnings": context.settings.warnings_list() if context.settings else [],
         }
 
     @app.get("/api/alerts/recent")
@@ -231,5 +382,153 @@ def create_app(context: UiContext) -> FastAPI:
         if context.settings is None:
             return JSONResponse(payload, status_code=503)
         return JSONResponse(payload)
+
+    # ------------------------------------------------------------------- settings
+    @app.get("/api/settings")
+    def get_settings() -> dict[str, Any]:
+        assert context.settings_store is not None
+        return settings_payload(
+            context.settings,
+            settings_error=context.settings_error,
+            env_file=str(context.settings_store.path),
+            connect=connect_payload(context.settings, settings_error=context.settings_error),
+        )
+
+    @app.put("/api/settings")
+    def put_settings(request: Request, update: SettingsUpdate) -> JSONResponse:
+        require_same_origin(request)
+        assert context.settings_store is not None
+        result = context.settings_store.save(update.values)
+        payload = result.as_dict()
+        if result.retry_after > 0:
+            return JSONResponse(
+                payload,
+                status_code=429,
+                headers={"Retry-After": str(max(1, math.ceil(result.retry_after)))},
+            )
+        if not result.ok:
+            return JSONResponse(payload, status_code=422 if result.errors else 400)
+        context.reload()
+        return JSONResponse(payload)
+
+    @app.post("/api/settings/check")
+    def check_settings(request: Request) -> JSONResponse:
+        require_same_origin(request)
+        assert context.settings_store is not None
+        result = context.settings_store.check()
+        payload = result.as_dict()
+        return JSONResponse(payload, status_code=200 if result.ok else 422)
+
+    # ----------------------------------------------------------------------- kite
+    @app.post("/api/kite/login")
+    def kite_login(request: Request) -> JSONResponse:
+        require_same_origin(request)
+        assert context.kite is not None
+        try:
+            start = context.kite.start()
+        except ConnectError as exc:
+            return _error(400, exc.message, exc.code)
+        response = JSONResponse(
+            {
+                "ok": True,
+                "start_url": start.start_url,
+                "redirect_url": start.redirect_url,
+                "expires_in": start.expires_in,
+                "message": (
+                    "Opening Zerodha's login page. Log in there — this app never sees your "
+                    "password or one-time code."
+                ),
+            }
+        )
+        response.set_cookie(
+            STATE_COOKIE,
+            start.state,
+            max_age=start.expires_in,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+        return response
+
+    @app.get("/kite/start", include_in_schema=False)
+    def kite_start() -> RedirectResponse:
+        assert context.kite is not None
+        target = context.kite.pending_login_url()
+        if target is None:
+            return RedirectResponse("/?connect=no_attempt#/connect", status_code=303)
+        return RedirectResponse(target, status_code=302)
+
+    def _failed_callback(code: str) -> RedirectResponse:
+        return RedirectResponse(f"/?connect={code}#/connect", status_code=303)
+
+    @app.get("/callback", include_in_schema=False)
+    def callback(
+        request: Request,
+        request_token: str = "",
+        state: str = "",
+        status: str = "",
+    ) -> RedirectResponse:
+        assert context.kite is not None
+        if status and status != "success":
+            context.kite.cancel_pending()
+            return _failed_callback("cancelled")
+        effective_state = state or request.cookies.get(STATE_COOKIE, "")
+        try:
+            context.kite.finish(request_token, effective_state)
+        except ConnectError as exc:
+            return _failed_callback(exc.code)
+        response = RedirectResponse("/?connect=connected#/connect", status_code=303)
+        response.delete_cookie(STATE_COOKIE, path="/")
+        return response
+
+    @app.post("/api/kite/manual-token")
+    def manual_token(request: Request, payload: ManualToken) -> JSONResponse:
+        require_same_origin(request)
+        assert context.kite is not None
+        effective_state = payload.state or request.cookies.get(STATE_COOKIE, "")
+        try:
+            result = context.kite.finish(payload.request_token, effective_state)
+        except ConnectError as exc:
+            return _error(400, exc.message, exc.code)
+        return JSONResponse(result.as_dict())
+
+    @app.get("/api/kite/session")
+    def kite_session() -> dict[str, Any]:
+        assert context.kite is not None
+        session = context.kite.session()
+        payload = session.as_dict()
+        payload["redirect_url"] = context.kite.redirect_url
+        payload["token_present"] = bool(context.settings and context.settings.kite.token)
+        payload["credentials"] = connect_payload(
+            context.settings, settings_error=context.settings_error
+        )
+        return payload
+
+    @app.post("/api/kite/disconnect")
+    def kite_disconnect(request: Request) -> JSONResponse:
+        require_same_origin(request)
+        assert context.kite is not None
+        return JSONResponse(context.kite.disconnect().as_dict())
+
+    @app.get("/api/data-sources")
+    def data_sources(refresh: bool = False) -> dict[str, Any]:
+        assert context.kite is not None
+        return context.kite.data_sources(force=refresh)
+
+    # -------------------------------------------------------------- notifications
+    @app.post("/api/notifications/telegram/chat-id")
+    def telegram_chat_id(request: Request) -> JSONResponse:
+        require_same_origin(request)
+        assert context.telegram is not None
+        return JSONResponse(context.telegram.find_chat_id().as_dict())
+
+    # ------------------------------------------------------------------- practice
+    @app.post("/api/practice/check")
+    def practice_check(request: Request) -> JSONResponse:
+        require_same_origin(request)
+        if context.settings is None:
+            return _error(503, NO_SETTINGS_MESSAGE, "no_settings")
+        timeline = build_demo_timeline_for(context.settings.params)
+        return JSONResponse(_practice_payload(timeline, context.version))
 
     return app

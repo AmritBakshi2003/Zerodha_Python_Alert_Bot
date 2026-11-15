@@ -8,216 +8,484 @@
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/static/styles.css">
     <script src="/static/vendor/lightweight-charts/lightweight-charts.standalone.production.js" defer></script>
-    <script src="/static/app.js" defer></script>
+    <script type="module" src="/static/app.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
 
-    <header class="site-header">
-      <div class="wrap header-inner">
-        <div>
-          <h1>Kite Alerts</h1>
-          <p class="tagline">
-            Alert dashboard. <strong>Alerts only — it never places orders.</strong>
-          </p>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">KA</span>
+          <div>
+            <p class="brand-name">Kite Alerts</p>
+            <p class="brand-note">Alerts only</p>
+          </div>
         </div>
-        <nav aria-label="Sections">
-          <ul class="nav-list">
-            <li><a href="#dashboard">Dashboard</a></li>
-            <li><a href="#demo">Demo player</a></li>
-            <li><a href="#history">Alert history</a></li>
-            <li><a href="#test-alert">Test alert</a></li>
-            <li><a href="#help">Help</a></li>
+
+        <nav aria-label="Pages">
+          <ul class="side-nav">
+            <li><a href="#/dashboard" data-route="dashboard">Dashboard</a></li>
+            <li><a href="#/practice" data-route="practice">Practice</a></li>
+            <li><a href="#/alerts" data-route="alerts">Alerts</a></li>
+            <li><a href="#/settings" data-route="settings">Settings</a></li>
+            <li><a href="#/connect" data-route="connect">Connect</a></li>
+            <li><a href="#/help" data-route="help">Help</a></li>
           </ul>
         </nav>
-      </div>
-    </header>
 
-    <main id="main" class="wrap">
-      <section id="dashboard" class="panel" aria-labelledby="dashboard-title">
-        <div class="panel-head">
-          <h2 id="dashboard-title">Dashboard</h2>
-          <p class="panel-note">Refreshes every few seconds while this page is open.</p>
-        </div>
+        <p class="side-foot">
+          It never places, modifies or cancels orders.<br>
+          <a href="#/help">What that means</a>
+        </p>
+      </aside>
 
-        <div class="status-grid">
-          <article class="card status-card" id="status-card">
-            <p class="status-dot" id="bot-status-dot" data-state="stopped" aria-hidden="true"></p>
-            <div aria-live="polite">
-              <h3 id="bot-status-label">Checking…</h3>
-              <p class="muted" id="bot-status-detail">Looking for the bot's health check.</p>
-              <p class="small muted" id="bot-status-checked"></p>
+      <div class="main-col">
+        <header class="topbar">
+          <p class="topbar-title" id="topbar-title">Dashboard</p>
+          <p class="connection-chip" id="connection-chip" data-state="off">
+            <span class="chip-dot" aria-hidden="true"></span>
+            <span id="connection-chip-text">Kite: not connected</span>
+          </p>
+        </header>
+
+        <main id="main" tabindex="-1">
+          <!-- ---------------------------------------------------------- dashboard -->
+          <section class="page" id="page-dashboard" data-page="dashboard"
+                   aria-labelledby="dashboard-title">
+            <div class="page-head">
+              <h1 id="dashboard-title">Dashboard</h1>
+              <p class="page-note">Refreshes every few seconds while this page is open.</p>
             </div>
-            <button type="button" id="status-refresh" class="button button-quiet">Refresh status</button>
-          </article>
 
-          <article class="card counts-card">
-            <h3>Today's alerts</h3>
-            <p class="counts">
-              <span class="count count-buy"><span id="count-buys">0</span>
-                <span class="count-label">buys</span></span>
-              <span class="count count-sell"><span id="count-sells">0</span>
-                <span class="count-label">sells</span></span>
+            <div class="status-grid">
+              <article class="card status-card" id="status-card">
+                <p class="status-dot" id="bot-status-dot" data-state="stopped" aria-hidden="true"></p>
+                <div aria-live="polite">
+                  <h2 id="bot-status-label">Checking…</h2>
+                  <p class="muted" id="bot-status-detail">Looking for the bot's health check.</p>
+                  <p class="small muted" id="bot-status-checked"></p>
+                </div>
+                <button type="button" id="status-refresh" class="button button-quiet">Refresh status</button>
+              </article>
+
+              <article class="card counts-card">
+                <h2>Today's alerts</h2>
+                <p class="counts">
+                  <span class="count count-buy"><span id="count-buys">0</span>
+                    <span class="count-label">buys</span></span>
+                  <span class="count count-sell"><span id="count-sells">0</span>
+                    <span class="count-label">sells</span></span>
+                </p>
+                <p class="small muted" id="counts-date"></p>
+              </article>
+            </div>
+
+            <h2 class="subhead">Latest alerts</h2>
+            <p class="muted" id="feed-empty">No alerts yet. Try the Practice page.</p>
+            <ul class="alert-feed" id="alert-feed" aria-live="polite" aria-label="Latest alerts"></ul>
+          </section>
+
+          <!-- ----------------------------------------------------------- practice -->
+          <section class="page" id="page-practice" data-page="practice" hidden
+                   aria-labelledby="practice-title">
+            <div class="page-head">
+              <h1 id="practice-title">Practice <span class="badge badge-demo">DEMO</span></h1>
+              <p class="page-note">
+                A made-up trading day replayed through the same alert engine as the live bot.
+                No account, no internet, and nothing is saved to your alert history.
+              </p>
+            </div>
+
+            <article class="card welcome" id="welcome" hidden>
+              <div class="welcome-head">
+                <h2>New here? Three small steps</h2>
+                <button type="button" class="button button-quiet" id="welcome-dismiss">Dismiss</button>
+              </div>
+              <ol class="welcome-steps">
+                <li><strong>Try Practice.</strong> Press Play below to watch the rules fire — no account needed.</li>
+                <li><strong>Set up alerts.</strong> Pick instruments and add Telegram or Slack on
+                  <a href="#/settings">Settings</a>.</li>
+                <li><strong>Connect Kite.</strong> Use your own Kite Connect app on
+                  <a href="#/connect">Connect</a> for live data.</li>
+              </ol>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Demo player <span class="badge badge-demo">DEMO</span></h2>
+                <p class="panel-note">
+                  Play, pause and change speed. Each alert card shows which rules agreed at that candle.
+                </p>
+              </div>
+
+              <div class="demo-controls" role="group" aria-label="Demo playback controls">
+                <button type="button" id="demo-play" class="button">Play</button>
+                <button type="button" id="demo-pause" class="button button-quiet" disabled>Pause</button>
+                <button type="button" id="demo-reset" class="button button-quiet">Reset</button>
+                <label class="field-inline" for="demo-speed">Speed
+                  <select id="demo-speed">
+                    <option value="1">1x</option>
+                    <option value="5" selected>5x</option>
+                    <option value="20">20x</option>
+                    <option value="60">60x</option>
+                  </select>
+                </label>
+                <span class="progress" id="demo-progress">Loading…</span>
+              </div>
+
+              <ul class="legend" aria-label="Chart legend">
+                <li><span class="swatch swatch-ema-fast" aria-hidden="true"></span>EMA 9</li>
+                <li><span class="swatch swatch-ema-slow" aria-hidden="true"></span>EMA 21</li>
+                <li><span class="swatch swatch-orb" aria-hidden="true"></span>Opening-range band</li>
+                <li><span class="swatch swatch-rsi" aria-hidden="true"></span>RSI panel</li>
+                <li><span class="swatch swatch-macd" aria-hidden="true"></span>MACD panel</li>
+              </ul>
+
+              <div class="chart" id="chart" role="img"
+                   aria-label="Candlestick chart of the demo day with two EMA lines, an opening-range band, a BUY/SELL marker on each alert candle, an RSI panel and a MACD panel."></div>
+              <p class="small muted">
+                Chart times are IST. A BUY or SELL marker sits on the exact candle that fired the alert.
+              </p>
+
+              <h2 class="subhead">Alerts in this replay
+                <span id="demo-counts" class="muted small"></span></h2>
+              <div id="demo-alerts" class="demo-alerts" aria-live="polite"></div>
+              <p id="demo-summary" class="demo-summary" role="status"></p>
+            </article>
+
+            <article class="panel" id="practice-check-panel">
+              <div class="panel-head">
+                <h2>Test my settings</h2>
+                <p class="panel-note">
+                  Replays the same practice day through the engine using the settings you saved,
+                  so you can see what your thresholds would do. This is a demonstration only —
+                  it is not a recommendation and it never touches your history.
+                </p>
+              </div>
+              <button type="button" id="practice-check" class="button">Test my settings</button>
+              <p class="test-status" id="practice-check-status" role="status"></p>
+              <div id="practice-check-result" class="practice-result" hidden></div>
+            </article>
+          </section>
+
+          <!-- ------------------------------------------------------------- alerts -->
+          <section class="page" id="page-alerts" data-page="alerts" hidden
+                   aria-labelledby="alerts-title">
+            <div class="page-head">
+              <h1 id="alerts-title">Alert history</h1>
+              <p class="page-note">
+                Read straight from the bot's alert database, opened read-only.
+                The dashboard can never change it.
+              </p>
+            </div>
+
+            <div class="filters">
+              <label for="history-symbol">Symbol
+                <select id="history-symbol">
+                  <option value="">All symbols</option>
+                </select>
+              </label>
+              <label for="history-side">Side
+                <select id="history-side">
+                  <option value="">All sides</option>
+                  <option value="BUY">BUY</option>
+                  <option value="SELL">SELL</option>
+                </select>
+              </label>
+              <button type="button" id="history-refresh" class="button button-quiet">Refresh</button>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <caption>Alerts recorded by the bot, newest first</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Time (IST)</th>
+                    <th scope="col">Symbol</th>
+                    <th scope="col">Side</th>
+                    <th scope="col">Price</th>
+                    <th scope="col">Alert</th>
+                  </tr>
+                </thead>
+                <tbody id="history-body"></tbody>
+              </table>
+            </div>
+            <p class="muted" id="history-empty">No alerts yet. Try the Practice page.</p>
+
+            <div class="pager">
+              <button type="button" id="history-prev" class="button button-quiet" disabled>Previous</button>
+              <span id="history-page" class="muted small"></span>
+              <button type="button" id="history-next" class="button button-quiet" disabled>Next</button>
+            </div>
+          </section>
+
+          <!-- ----------------------------------------------------------- settings -->
+          <section class="page" id="page-settings" data-page="settings" hidden
+                   aria-labelledby="settings-title">
+            <div class="page-head">
+              <h1 id="settings-title">Settings</h1>
+              <p class="page-note">
+                Every value comes from the same configuration file the bot reads.
+                Secret fields are never shown again once saved.
+              </p>
+            </div>
+
+            <p class="notice" id="settings-warning" hidden></p>
+            <p class="notice notice-quiet" id="settings-applies" hidden></p>
+            <ul class="setup-hints" id="settings-warnings" hidden></ul>
+
+            <form id="settings-form" novalidate>
+              <div id="settings-groups" class="settings-groups"></div>
+
+              <div class="save-bar">
+                <button type="submit" id="settings-save" class="button">Save settings</button>
+                <button type="button" id="settings-check" class="button button-quiet">Check settings</button>
+                <p class="test-status" id="settings-status" role="status"></p>
+              </div>
+            </form>
+
+            <div id="settings-check-result" class="settings-check" hidden></div>
+
+            <article class="panel" id="notifications-guide">
+              <div class="panel-head">
+                <h2>Guided notifications</h2>
+                <p class="panel-note">
+                  Alerts are useful only if they reach you. The terminal window is always on;
+                  these add a phone or a team channel.
+                </p>
+              </div>
+
+              <div class="guide-grid">
+                <div class="guide-card">
+                  <h3>Telegram</h3>
+                  <ol class="guide-steps">
+                    <li>Open <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">@BotFather</a>
+                      in Telegram and create a bot. Copy the token it gives you.</li>
+                    <li>Paste the token in “Telegram bot token” above, choose Telegram under Channels,
+                      and save.</li>
+                    <li>Open your new bot and press <strong>Start</strong>, then press
+                      “Find my chat id” here.</li>
+                  </ol>
+                  <button type="button" id="telegram-find" class="button button-quiet">Find my chat id</button>
+                  <p class="test-status" id="telegram-status" role="status"></p>
+                  <p class="small muted">The chat id fills in above; save again to keep it.</p>
+                </div>
+
+                <div class="guide-card">
+                  <h3>Slack</h3>
+                  <ol class="guide-steps">
+                    <li>In Slack, create an Incoming Webhook for the channel you want.</li>
+                    <li>Paste the webhook URL in “Slack webhook URL” above, choose Slack under
+                      Channels, and save.</li>
+                  </ol>
+                  <p class="small muted">The URL is stored write-only and never shown again.</p>
+                </div>
+              </div>
+
+              <h3 class="subhead">Send a test</h3>
+              <p class="muted">
+                Sends one clearly labelled TEST message through every configured channel.
+                It is never recorded as a real alert, and you can send one every 10 seconds.
+              </p>
+              <button type="button" id="test-alert-button" class="button">Send test alert</button>
+              <p id="test-alert-status" class="test-status" role="status"></p>
+              <ul id="test-alert-results" class="channel-results" aria-label="Per-channel results"></ul>
+              <ul id="test-alert-setup" class="setup-hints" aria-label="How to add another channel"></ul>
+            </article>
+          </section>
+
+          <!-- ------------------------------------------------------------ connect -->
+          <section class="page" id="page-connect" data-page="connect" hidden
+                   aria-labelledby="connect-title">
+            <div class="page-head">
+              <h1 id="connect-title">Connect to Zerodha</h1>
+              <p class="page-note">
+                Each person uses their own Kite Connect app and pays Zerodha directly.
+                This app never has a shared key, never sees your password or one-time code,
+                and never automates the login.
+              </p>
+            </div>
+
+            <article class="card connect-status" id="connect-status-card">
+              <div>
+                <h2 id="connect-status">Checking your connection…</h2>
+                <p class="muted" id="connect-status-detail"></p>
+              </div>
+              <button type="button" id="connect-disconnect" class="button button-quiet" hidden>
+                Disconnect
+              </button>
+            </article>
+
+            <p class="notice" id="connect-message" role="status" hidden></p>
+
+            <div class="wizard">
+              <article class="step">
+                <h2><span class="step-number" aria-hidden="true">1</span>
+                  Create your own Kite Connect app</h2>
+                <p>
+                  Go to <a href="https://developers.kite.trade" target="_blank"
+                  rel="noopener noreferrer">developers.kite.trade</a>, sign in with your
+                  Zerodha account and create an app. You get an API key and an API secret.
+                </p>
+                <p class="notice notice-quiet">
+                  Live market data needs a paid Kite Connect plan; the free Personal tier
+                  allows login but not market data. Check developers.kite.trade for current
+                  pricing — this app never charges you and never guesses a price.
+                </p>
+              </article>
+
+              <article class="step">
+                <h2><span class="step-number" aria-hidden="true">2</span>
+                  Copy the redirect URL into that app</h2>
+                <p>
+                  In your Kite app's settings, set the Redirect URL to exactly this value:
+                </p>
+                <div class="copy-row">
+                  <code id="connect-redirect">Loading…</code>
+                  <button type="button" id="connect-copy" class="button button-quiet">Copy</button>
+                </div>
+                <p class="small muted" id="connect-copy-status" role="status"></p>
+                <p class="small muted">
+                  It is derived from the port this dashboard is running on, and it is a
+                  loopback address: the request comes back to this computer only.
+                </p>
+              </article>
+
+              <article class="step">
+                <h2><span class="step-number" aria-hidden="true">3</span>
+                  Paste your API key and secret</h2>
+                <p>They are stored in <code>.env</code> and only ever shown as “set” or “not set”.</p>
+                <div class="field-grid two">
+                  <div class="field">
+                    <label for="connect-key">API key</label>
+                    <input type="password" id="connect-key" autocomplete="new-password"
+                           placeholder="Paste your Kite API key">
+                    <p class="pill-row"><span class="pill" id="connect-key-state">Not set</span></p>
+                  </div>
+                  <div class="field">
+                    <label for="connect-secret">API secret</label>
+                    <input type="password" id="connect-secret" autocomplete="new-password"
+                           placeholder="Paste your Kite API secret">
+                    <p class="pill-row"><span class="pill" id="connect-secret-state">Not set</span></p>
+                  </div>
+                </div>
+                <button type="button" id="connect-save" class="button">Save key and secret</button>
+                <p class="test-status" id="connect-save-status" role="status"></p>
+              </article>
+
+              <article class="step">
+                <h2><span class="step-number" aria-hidden="true">4</span>
+                  Log in on Zerodha's own page</h2>
+                <p>
+                  Press the button and your browser opens Zerodha's login page. Type your
+                  password and one-time code there — this app never sees them. Zerodha sends
+                  a one-time token back to this dashboard, which exchanges it for the daily
+                  access token using the same code as <code>kite-alerts login</code>.
+                </p>
+                <button type="button" id="connect-start" class="button">Connect to Zerodha</button>
+
+                <details class="fallback" id="connect-fallback">
+                  <summary>Zerodha didn't come back? Paste the request_token instead</summary>
+                  <p class="small muted">
+                    If your Kite app rejects a loopback redirect URL, after logging in copy the
+                    <code>request_token</code> value from the address bar and paste it here.
+                  </p>
+                  <label for="connect-manual-token">request_token</label>
+                  <input type="text" id="connect-manual-token" autocomplete="off"
+                         placeholder="Paste the request_token value">
+                  <button type="button" id="connect-manual-button" class="button button-quiet">
+                    Finish connecting
+                  </button>
+                  <p class="test-status" id="connect-manual-status" role="status"></p>
+                </details>
+              </article>
+            </div>
+
+            <article class="panel" id="data-plan">
+              <div class="panel-head">
+                <h2>What data can this account use?</h2>
+                <p class="panel-note">
+                  After connecting, the dashboard makes one cheap read-only call to see
+                  whether your plan includes market data.
+                </p>
+              </div>
+              <ul class="source-list" id="data-sources" aria-live="polite"></ul>
+              <p class="small muted" id="data-sources-checked"></p>
+              <button type="button" id="data-sources-refresh" class="button button-quiet">
+                Check again
+              </button>
+            </article>
+          </section>
+
+          <!-- --------------------------------------------------------------- help -->
+          <section class="page" id="page-help" data-page="help" hidden
+                   aria-labelledby="help-title">
+            <div class="page-head">
+              <h1 id="help-title">Help &amp; about</h1>
+              <p class="page-note">What this tool is, and what to do on your first day.</p>
+            </div>
+
+            <dl class="about-list">
+              <dt>Version</dt>
+              <dd id="about-version">…</dd>
+              <dt>Mode</dt>
+              <dd id="about-mode">…</dd>
+            </dl>
+
+            <p id="about-alerts-only" class="alerts-only">
+              This tool only sends alerts. It never places, modifies or cancels orders.
             </p>
-            <p class="small muted" id="counts-date"></p>
-          </article>
-        </div>
+            <p id="about-settings-warning" class="warning" hidden></p>
 
-        <h3 class="subhead">Latest alerts</h3>
-        <p class="muted" id="feed-empty">No alerts yet. Try the demo player.</p>
-        <ul class="alert-feed" id="alert-feed" aria-live="polite" aria-label="Latest alerts"></ul>
-      </section>
+            <h2 class="subhead">Your first day</h2>
+            <ol id="about-checklist" class="checklist">
+              <li>Open Connect and create your own Kite Connect app.</li>
+              <li>Paste the key and secret, then log in on Zerodha's page.</li>
+              <li>Choose instruments and a notification channel on Settings.</li>
+              <li>Run <code>kite-alerts run</code> in its own window to start the alerts.</li>
+            </ol>
 
-      <section id="demo" class="panel" aria-labelledby="demo-title">
-        <div class="panel-head">
-          <h2 id="demo-title">Demo player <span class="badge badge-demo">DEMO</span></h2>
-          <p class="panel-note">
-            A practice day replayed through the same alert engine as the live bot.
-            No account, no internet, and nothing is saved to your alert history.
+            <h2 class="subhead">If something goes wrong</h2>
+            <ul class="troubleshooting">
+              <li>
+                <strong>“Redirect URL mismatch” on Zerodha.</strong> The URL in your Kite app
+                must match <span id="help-redirect">the address shown on Connect</span> exactly,
+                including the port. Copy it again from step 2.
+              </li>
+              <li>
+                <strong>“Token expired”.</strong> Kite tokens last until about 06:00 IST.
+                Press Connect again; the bot itself needs a fresh token each morning too.
+              </li>
+              <li>
+                <strong>“Your Kite plan has no market data”.</strong> Login succeeded but your
+                plan does not include live quotes. The dashboard will use delayed data instead.
+              </li>
+              <li>
+                <strong>“Port in use”.</strong> Something else is on 8765. Start the dashboard
+                with <code>kite-alerts ui --port 8766</code> and put the new redirect URL into
+                your Kite app.
+              </li>
+            </ul>
+
+            <p class="small muted">
+              This dashboard is served entirely from this computer. No CDN, no external fonts,
+              no analytics and no telemetry.
+            </p>
+          </section>
+        </main>
+
+        <footer class="site-footer">
+          <p class="attribution">
+            Charts by <a href="https://www.tradingview.com/" rel="noopener noreferrer">TradingView
+            Lightweight Charts™</a>. Copyright (с) 2025 TradingView, Inc.
+            <a href="https://www.tradingview.com/" rel="noopener noreferrer">https://www.tradingview.com/</a>.
+            Licensed under the <a href="/license">Apache License, Version 2.0</a>; the
+            <a href="/notice">attribution notice</a> is included with the vendored library.
           </p>
-        </div>
-
-        <div class="demo-controls" role="group" aria-label="Demo playback controls">
-          <button type="button" id="demo-play" class="button">Play</button>
-          <button type="button" id="demo-pause" class="button button-quiet" disabled>Pause</button>
-          <button type="button" id="demo-reset" class="button button-quiet">Reset</button>
-          <label class="field-inline" for="demo-speed">Speed
-            <select id="demo-speed">
-              <option value="1">1x</option>
-              <option value="5" selected>5x</option>
-              <option value="20">20x</option>
-              <option value="60">60x</option>
-            </select>
-          </label>
-          <span class="progress" id="demo-progress">Loading…</span>
-        </div>
-
-        <ul class="legend" aria-label="Chart legend">
-          <li><span class="swatch swatch-ema-fast" aria-hidden="true"></span>EMA 9</li>
-          <li><span class="swatch swatch-ema-slow" aria-hidden="true"></span>EMA 21</li>
-          <li><span class="swatch swatch-orb" aria-hidden="true"></span>Opening-range band</li>
-          <li><span class="swatch swatch-rsi" aria-hidden="true"></span>RSI panel</li>
-          <li><span class="swatch swatch-macd" aria-hidden="true"></span>MACD panel</li>
-        </ul>
-
-        <div class="chart" id="chart" role="img"
-             aria-label="Candlestick chart of the demo day with two EMA lines, an opening-range band, a BUY/SELL marker on each alert candle, an RSI panel and a MACD panel."></div>
-        <p class="small muted">Chart times are IST. A BUY or SELL marker sits on the exact candle that fired the alert.</p>
-
-        <h3 class="subhead">Alerts in this replay <span id="demo-counts" class="muted small"></span></h3>
-        <div id="demo-alerts" class="demo-alerts" aria-live="polite"></div>
-        <p id="demo-summary" class="demo-summary" role="status"></p>
-      </section>
-
-      <section id="history" class="panel" aria-labelledby="history-title">
-        <div class="panel-head">
-          <h2 id="history-title">Alert history</h2>
-          <p class="panel-note">
-            Read straight from the bot's alert database, opened read-only.
-            The dashboard can never change it.
-          </p>
-        </div>
-
-        <div class="filters">
-          <label for="history-symbol">Symbol
-            <select id="history-symbol">
-              <option value="">All symbols</option>
-            </select>
-          </label>
-          <label for="history-side">Side
-            <select id="history-side">
-              <option value="">All sides</option>
-              <option value="BUY">BUY</option>
-              <option value="SELL">SELL</option>
-            </select>
-          </label>
-          <button type="button" id="history-refresh" class="button button-quiet">Refresh</button>
-        </div>
-
-        <div class="table-wrap">
-          <table>
-            <caption>Alerts recorded by the bot, newest first</caption>
-            <thead>
-              <tr>
-                <th scope="col">Time (IST)</th>
-                <th scope="col">Symbol</th>
-                <th scope="col">Side</th>
-                <th scope="col">Price</th>
-                <th scope="col">Alert</th>
-              </tr>
-            </thead>
-            <tbody id="history-body"></tbody>
-          </table>
-        </div>
-        <p class="muted" id="history-empty">No alerts yet. Try the demo player.</p>
-
-        <div class="pager">
-          <button type="button" id="history-prev" class="button button-quiet" disabled>Previous</button>
-          <span id="history-page" class="muted small"></span>
-          <button type="button" id="history-next" class="button button-quiet" disabled>Next</button>
-        </div>
-      </section>
-
-      <section id="test-alert" class="panel" aria-labelledby="test-alert-title">
-        <div class="panel-head">
-          <h2 id="test-alert-title">Test alert</h2>
-          <p class="panel-note">
-            Send a clearly labelled TEST message through the channels set in your
-            <code>.env</code>. Test messages are never recorded as real alerts.
-          </p>
-        </div>
-        <button type="button" id="test-alert-button" class="button">Send test alert</button>
-        <p id="test-alert-status" class="test-status" role="status"></p>
-        <ul id="test-alert-results" class="channel-results" aria-label="Per-channel results"></ul>
-        <ul id="test-alert-setup" class="setup-hints" aria-label="How to add another channel"></ul>
-        <p class="small muted">Limited to one test every 10 seconds.</p>
-      </section>
-
-      <section id="help" class="panel" aria-labelledby="help-title">
-        <div class="panel-head">
-          <h2 id="help-title">Help &amp; about</h2>
-          <p class="panel-note">What this tool is, and what to do on your first day.</p>
-        </div>
-
-        <dl class="about-list">
-          <dt>Version</dt>
-          <dd id="about-version">…</dd>
-          <dt>Mode</dt>
-          <dd id="about-mode">…</dd>
-        </dl>
-
-        <p id="about-alerts-only" class="alerts-only">
-          This tool only sends alerts. It never places, modifies or cancels orders.
-        </p>
-        <p id="about-settings-warning" class="warning" hidden></p>
-
-        <h3>Your first day</h3>
-        <ol id="about-checklist" class="checklist">
-          <li>Copy <code>.env.example</code> to <code>.env</code> and fill in your Kite keys.</li>
-          <li>Run <code>kite-alerts config-check</code> to confirm the settings are valid.</li>
-          <li>Run <code>kite-alerts login</code> each morning — the token expires around 06:00 IST.</li>
-          <li>Run <code>kite-alerts run</code> in its own window to start the alerts.</li>
-          <li>Try the demo player on this page first: it needs no account and no internet.</li>
-        </ol>
-
-        <p class="small muted">
-          This dashboard is served entirely from this computer. No CDN, no external fonts,
-          no analytics and no telemetry.
-        </p>
-      </section>
-    </main>
-
-    <footer class="site-footer">
-      <div class="wrap">
-        <p class="attribution">
-          Charts by <a href="https://www.tradingview.com/" rel="noopener noreferrer">TradingView
-          Lightweight Charts™</a>. Copyright (с) 2025 TradingView, Inc.
-          <a href="https://www.tradingview.com/" rel="noopener noreferrer">https://www.tradingview.com/</a>.
-          Licensed under the <a href="/license">Apache License, Version 2.0</a>; the
-          <a href="/notice">attribution notice</a> is included with the vendored library.
-        </p>
-        <p class="small muted">kite-alerts is alerts-only software. Not investment advice.</p>
+          <p class="small muted">kite-alerts is alerts-only software. It never places orders. Not investment advice.</p>
+        </footer>
       </div>
-    </footer>
+    </div>
   </body>
 </html>
