@@ -11,7 +11,7 @@ import kite_alerts
 
 UI = Path(kite_alerts.__file__).parent / "ui"
 STATIC = UI / "static"
-ROUTES = ["dashboard", "practice", "alerts", "settings", "connect", "help"]
+ROUTES = ["chart", "dashboard", "practice", "alerts", "settings", "connect", "help"]
 
 
 def html() -> str:
@@ -23,7 +23,7 @@ def module(name: str) -> str:
 
 
 class TestSidebar:
-    def test_all_six_routes_are_in_the_sidebar_in_order(self) -> None:
+    def test_chart_is_first_and_all_routes_are_in_the_sidebar_in_order(self) -> None:
         routes = re.findall(r'data-route="([a-z]+)"', html())
         assert routes == ROUTES
 
@@ -31,12 +31,12 @@ class TestSidebar:
         pages = re.findall(r'data-page="([a-z]+)"', html())
         assert pages == ROUTES
 
-    def test_only_the_dashboard_is_visible_initially(self) -> None:
+    def test_only_the_chart_is_visible_initially(self) -> None:
         for match in re.finditer(
             r'<section class="page"[^>]*data-page="([a-z]+)"([^>]*)>', html(), re.S
         ):
             route, attributes = match.groups()
-            assert ("hidden" in attributes) is (route != "dashboard")
+            assert ("hidden" in attributes) is (route != "chart")
 
     def test_the_nav_is_accessible(self) -> None:
         text = html()
@@ -50,8 +50,8 @@ class TestSidebar:
         source = module("app.js")
         assert 'window.addEventListener("hashchange", routeChange)' in source
         assert (
-            'const ROUTES = ["dashboard", "practice", "alerts", "settings", "connect", "help"]'
-            in source
+            'const ROUTES = ["chart", "dashboard", "practice", "alerts", "settings", '
+            '"connect", "help"]' in source
         )
         assert "aria-current" in source
         assert 'document.title = "Kite Alerts — "' in source
@@ -150,7 +150,7 @@ class TestPageContent:
 class TestStaticHygiene:
     def test_modules_are_served_and_imported(self) -> None:
         app = module("app.js")
-        for name in ("connect", "practice", "settings"):
+        for name in ("connect", "practice", "settings", "chart"):
             assert f'from "./{name}.js"' in app
         assert 'from "./dom.js"' in app
 

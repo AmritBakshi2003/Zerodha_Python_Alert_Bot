@@ -68,8 +68,19 @@ kite-alerts ui --open       # opens http://127.0.0.1:8765 in your browser
 ```
 
 The left sidebar switches pages (each page has its own `#/` address, so a
-bookmark or refresh keeps you there):
+bookmark or refresh keeps you there). **Chart** is the landing page:
 
+- **Chart** — a read-only chart workstation. Choose Delayed NSE (default), the
+  Crypto showcase, or the Demo replay; Kite live is visible but disabled until
+  C4. Switch candles, hollow candles, Heikin-Ashi, OHLC bars, line, area or
+  baseline; 1/3/5/15-minute timeframes; toggle server-computed EMA, RSI, MACD,
+  volume, opening range and OI; zoom, scroll, crosshair OHLC, log scale,
+  fullscreen, PNG export (with the badge) and OS light/dark. A permanent badge
+  says `DELAYED`, `SHOWCASE`, `DEMO` or `LIVE`, the freshness line shows the real
+  candle age and measured provider delay, and a watchlist, five-rule signal meter
+  and IST market clock sit alongside. If a provider is unavailable the last data
+  stays visible and is marked stale. Nothing here sends an alert. See
+  [docs/data-sources.md](docs/data-sources.md).
 - **Dashboard** — whether the bot is running (it asks the bot's existing
   `/health` endpoint), today's BUY and SELL counts, and a live feed of the latest
   alerts with the full reason.
@@ -132,6 +143,12 @@ Files the dashboard may write: `.env` (settings and tokens, atomically) and
 `.env.bak-<timestamp>` backups (the newest five). Both match `.gitignore`.
 Secrets are write-only: the page can show "set" or "not set", never the value,
 and no endpoint returns one.
+
+The Chart page's delayed NSE data comes from the open-source `yfinance` package
+and is **unofficial and delayed**; it is never live Kite data. The crypto
+showcase uses a free, keyless public feed and is labelled `SHOWCASE`, not NSE.
+The meaning, delay, limits and provider licences are documented in
+[docs/data-sources.md](docs/data-sources.md). Kite live streaming is C4.
 
 The dashboard only listens on your own computer (`127.0.0.1`), validates the
 `Host` header, serves a restrictive CSP with no CDN, requires a same-origin

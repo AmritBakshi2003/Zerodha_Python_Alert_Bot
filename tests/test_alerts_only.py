@@ -190,3 +190,13 @@ def test_no_cdn_in_any_ui_asset() -> None:
         text = path.read_text(encoding="utf-8")
         offenders.extend(f"{path.name}: {host}" for host in forbidden if host in text)
     assert not offenders, f"external asset host(s) referenced: {offenders}"
+
+
+def test_c3_chart_package_and_assets_are_scanned() -> None:
+    """The chart workstation is Python plus JS/HTML, and is in the same guard."""
+    root = Path(kite_alerts.__file__).parent / "ui"
+    chart_files = sorted((root / "chart").glob("*.py"))
+    assert {"sources.py", "service.py", "transforms.py"} <= {path.name for path in chart_files}
+    names = {path.name for path in ui_asset_files()}
+    assert {"chart.js", "index.html", "styles.css"} <= names
+    assert any(path.suffix == ".py" for path in package_files())

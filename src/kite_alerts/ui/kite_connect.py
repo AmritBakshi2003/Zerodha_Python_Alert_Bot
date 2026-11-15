@@ -122,6 +122,22 @@ class DataSource:
     label: str
     available: bool
     reason: str
+    badge: str = ""
+    enabled: bool = True
+    notice: str = ""
+    supports_oi: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "available": self.available,
+            "reason": self.reason,
+            "badge": self.badge,
+            "enabled": self.enabled,
+            "notice": self.notice,
+            "supports_oi": self.supports_oi,
+        }
 
 
 @dataclass
@@ -408,11 +424,24 @@ class KiteConnectService:
                     "Kite live",
                     False,
                     "Connect to Zerodha to use live Kite market data.",
+                    badge="LIVE",
+                    enabled=False,
+                    notice="Live Kite feed arrives in a later update (C4).",
+                    supports_oi=True,
                 )
             else:
                 assert settings is not None
                 available, reason = self._probe_live(settings, token)
-                live = DataSource("kite_live", "Kite live", available, reason)
+                live = DataSource(
+                    "kite_live",
+                    "Kite live",
+                    available,
+                    reason,
+                    badge="LIVE",
+                    enabled=False,
+                    notice="Live Kite feed arrives in a later update (C4).",
+                    supports_oi=True,
+                )
             sources = (
                 DataSource(
                     "nse_delayed",
@@ -420,6 +449,8 @@ class KiteConnectService:
                     True,
                     "Delayed NSE quotes need no login and are used when live data is "
                     "unavailable.",
+                    badge="DELAYED",
+                    notice="Unofficial delayed data from a free public source. Not live.",
                 ),
                 live,
                 DataSource(
@@ -427,25 +458,21 @@ class KiteConnectService:
                     "Crypto showcase",
                     True,
                     "A built-in demonstration feed that needs no account.",
+                    badge="SHOWCASE",
+                    notice="Crypto showcase is not NSE data.",
                 ),
                 DataSource(
                     "demo",
-                    "Practice demo",
+                    "Demo replay",
                     True,
-                    "The offline practice replay on the Practice page.",
+                    "The offline practice replay; no account, no internet.",
+                    badge="DEMO",
+                    notice="A made-up day for practice. Nothing is saved.",
                 ),
             )
             self._data = (token, now, sources)
         return {
-            "sources": [
-                {
-                    "id": source.id,
-                    "label": source.label,
-                    "available": source.available,
-                    "reason": source.reason,
-                }
-                for source in sources
-            ],
+            "sources": [source.as_dict() for source in sources],
             "connected": bool(token),
             "checked_at": self._now_label(),
         }

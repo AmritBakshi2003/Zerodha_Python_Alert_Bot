@@ -46,6 +46,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from .. import __version__
 from ..config.settings import Settings, load_settings
 from ..core.errors import ConfigError
+from .chart.service import ChartService
+from .chart.types import ChartError
 from .demo_player import (
     DemoTimeline,
     build_demo_timeline_for,
@@ -127,6 +129,13 @@ class ManualToken(BaseModel):
     state: str = ""
 
 
+class WatchlistSymbol(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = "nse_delayed"
+    symbol: str = ""
+
+
 @dataclass
 class UiContext:
     """Everything the routes need, injectable for tests."""
@@ -145,6 +154,7 @@ class UiContext:
     telegram: TelegramSetupService | None = None
     kite_factory: Callable[[str, str], Any] = default_kite_factory
     http_get: Any = None
+    chart: ChartService | None = None
 
     def __post_init__(self) -> None:
         if self.settings_store is None:
@@ -162,6 +172,11 @@ class UiContext:
             if self.http_get is not None:
                 kwargs["http_get"] = self.http_get
             self.telegram = TelegramSetupService(lambda: self.settings, **kwargs)
+        if self.chart is None:
+            self.chart = ChartService(
+                settings_provider=lambda: self.settings,
+                watchlist_path=self.env_file.parent / "data" / "chart_watchlist.json",
+            )
 
     # ------------------------------------------------------------------ lifecycle
     def reload(self) -> None:
@@ -196,6 +211,7 @@ def build_context(
     port: int = 8765,
     kite_factory: Callable[[str, str], Any] = default_kite_factory,
     http_get: Any = None,
+    chart: ChartService | None = None,
 ) -> UiContext:
     """Load settings once; a broken ``.env`` must not stop the practice replay."""
     settings: Settings | None = None
@@ -227,6 +243,7 @@ def build_context(
         port=port,
         kite_factory=kite_factory,
         http_get=http_get,
+        chart=chart,
     )
 
 
@@ -514,6 +531,103 @@ def create_app(context: UiContext) -> FastAPI:
     def data_sources(refresh: bool = False) -> dict[str, Any]:
         assert context.kite is not None
         return context.kite.data_sources(force=refresh)
+
+    # ---------------------------------------------------------------------- chart
+    def chart_guard() -> None:
+        assert context.chart is not None
+        if not context.chart.allow_request():
+            raise HTTPException(
+                status_code=429,
+                detail="The chart is refreshing too often. Wait a few seconds and try again.",
+            )
+
+    def chart_failure(exc: ChartError) -> JSONResponse:
+        return _error(exc.status, exc.message, exc.code)
+
+    @app.get("/api/chart/symbols")
+    def chart_symbols(
+        source: Annotated[str, Query(max_length=32)] = "nse_delayed",
+        refresh: bool = False,
+    ) -> JSONResponse:
+        chart_guard()
+        assert context.chart is not None
+        if refresh:
+            context.chart.clear_caches()
+        try:
+            return JSONResponse(context.chart.symbols_payload(source))
+        except ChartError as exc:
+            return chart_failure(exc)
+
+    @app.get("/api/chart/candles")
+    def chart_candles(
+        source: Annotated[str, Query(max_length=32)] = "nse_delayed",
+        symbol: Annotated[str, Query(max_length=80)] = "NSE:RELIANCE",
+        interval: Annotated[int, Query(ge=1, le=15)] = 5,
+        limit: Annotated[int, Query(ge=10, le=600)] = 300,
+    ) -> JSONResponse:
+        chart_guard()
+        assert context.chart is not None
+        try:
+            return JSONResponse(
+                context.chart.candles(
+                    source,
+                    symbol,
+                    interval=interval,
+                    limit=limit,
+                )
+            )
+        except ChartError as exc:
+            return chart_failure(exc)
+
+    @app.get("/api/chart/live")
+    def chart_live(
+        source: Annotated[str, Query(max_length=32)] = "nse_delayed",
+        symbol: Annotated[str, Query(max_length=80)] = "NSE:RELIANCE",
+        interval: Annotated[int, Query(ge=1, le=15)] = 1,
+    ) -> JSONResponse:
+        chart_guard()
+        assert context.chart is not None
+        try:
+            return JSONResponse(context.chart.live(source, symbol, interval=interval))
+        except ChartError as exc:
+            return chart_failure(exc)
+
+    @app.get("/api/chart/clock")
+    def chart_clock() -> JSONResponse:
+        chart_guard()
+        assert context.chart is not None
+        return JSONResponse(context.chart.clock_payload())
+
+    @app.get("/api/chart/watchlist")
+    def chart_watchlist(
+        source: Annotated[str, Query(max_length=32)] = "nse_delayed",
+    ) -> JSONResponse:
+        chart_guard()
+        assert context.chart is not None
+        try:
+            return JSONResponse(context.chart.watchlist(source))
+        except ChartError as exc:
+            return chart_failure(exc)
+
+    @app.post("/api/chart/watchlist")
+    def chart_watchlist_add(request: Request, payload: WatchlistSymbol) -> JSONResponse:
+        require_same_origin(request)
+        chart_guard()
+        assert context.chart is not None
+        try:
+            return JSONResponse(context.chart.add_watchlist(payload.source, payload.symbol))
+        except ChartError as exc:
+            return chart_failure(exc)
+
+    @app.delete("/api/chart/watchlist")
+    def chart_watchlist_remove(request: Request, payload: WatchlistSymbol) -> JSONResponse:
+        require_same_origin(request)
+        chart_guard()
+        assert context.chart is not None
+        try:
+            return JSONResponse(context.chart.remove_watchlist(payload.source, payload.symbol))
+        except ChartError as exc:
+            return chart_failure(exc)
 
     # -------------------------------------------------------------- notifications
     @app.post("/api/notifications/telegram/chat-id")
