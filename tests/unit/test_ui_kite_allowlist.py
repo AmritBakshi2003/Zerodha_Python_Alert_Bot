@@ -131,9 +131,8 @@ def test_frontend_fetches_only_same_origin_paths() -> None:
         text = path.read_text(encoding="utf-8")
         for match in re.finditer(r"fetch\(\s*([^,\n]+)", text):
             target = match.group(1).strip()
-            assert target.startswith('"/') or target.startswith("path"), (
-                f"{path.name} fetches {target}"
-            )
+            valid = target.startswith('"/') or target.startswith("path")
+            assert valid, f"{path.name} fetches {target}"
 
 
 def test_ui_only_calls_allowlisted_kite_methods() -> None:
