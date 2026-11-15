@@ -19,6 +19,7 @@ from kite_alerts.ui.security import (
     validate_bind_host,
 )
 from kite_alerts.ui.server import (
+    _is_listening,
     _open_when_ready,
     dashboard_url,
     run_ui,
@@ -267,3 +268,27 @@ class TestCliAndBrowser:
     def test_run_ui_refuses_a_public_host(self, tmp_path: Path) -> None:
         with pytest.raises(ConfigError):
             run_ui(host="10.0.0.5", env_file=tmp_path / "missing.env")
+
+    def test_is_listening_checks_socket(self) -> None:
+        # Port 1 is practically guaranteed not to be listening
+        assert _is_listening("127.0.0.1", 1, timeout=0.01) is False
+
+    def test_run_ui_with_simulator_and_browser(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def fake_run(app: object, **kwargs: object) -> None:
+            pass
+
+        monkeypatch.setattr("uvicorn.run", fake_run)
+        opened: list[str] = []
+        code = run_ui(
+            port=8900,
+            env_file=tmp_path / "missing.env",
+            db_path=tmp_path / "alerts.db",
+            simulate_kite=True,
+            open_browser=True,
+            browser_open=opened.append,
+        )
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "Kite simulator active" in out

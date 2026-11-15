@@ -30,6 +30,7 @@ const BADGE_MESSAGES = {
   SHOWCASE: "SHOWCASE — crypto, not NSE data",
   DEMO: "DEMO — a made-up practice day",
   LIVE: "LIVE",
+  SIMULATED: "SIMULATED, not real market data",
 };
 
 const state = {
@@ -50,6 +51,10 @@ const state = {
   series: {},
   tooltip: null,
   liveTimer: null,
+  stream: null,
+  isSimulated: false,
+  lastTickTs: null,
+  feedStatus: null,
   clockTimer: null,
   statusTimer: null,
   alertTimer: null,
@@ -272,14 +277,75 @@ function setSourceNote() {
   if (source.id === "crypto_showcase") {
     parts.push("Crypto is labelled SHOWCASE so it is never mistaken for NSE data.");
   }
+  if (source.id === "kite_live") {
+    if (state.isSimulated || source.badge === "SIMULATED") {
+      parts.push("SIMULATED, not real market data. Ticks are generated locally.");
+    } else {
+      parts.push("Streaming live ticks directly from your Kite account.");
+    }
+  }
   note.textContent = parts.join(" ");
   setBadge(source.badge || "DELAYED");
+  if (source.id === "kite_live") {
+    updateLiveBadge();
+  }
 }
 
 function setBadge(badge) {
   const node = byId("chart-badge");
   node.textContent = badge || "DELAYED";
   node.dataset.badge = badge || "DELAYED";
+  node.classList.remove("is-waiting", "is-stale");
+}
+
+function updateLiveBadge() {
+  if (state.source !== "kite_live") {
+    return;
+  }
+  const badge = byId("chart-badge");
+  if (!badge) {
+    return;
+  }
+
+  if (state.isSimulated) {
+    badge.textContent = "SIMULATED";
+    badge.dataset.badge = "SIMULATED";
+    badge.title = "SIMULATED, not real market data";
+    badge.classList.remove("is-waiting", "is-stale");
+    return;
+  }
+
+  const st = state.feedStatus ? state.feedStatus.state : "connecting";
+  const now = Date.now();
+  const age = state.lastTickTs ? (now - state.lastTickTs) / 1000 : 999;
+
+  if (st === "live") {
+    if (age <= 30) {
+      badge.textContent = "LIVE";
+      badge.dataset.badge = "LIVE";
+      badge.title = "Streaming real Kite market data";
+      badge.classList.remove("is-waiting", "is-stale");
+    } else {
+      const since = state.feedStatus && state.feedStatus.last_tick_time ? state.feedStatus.last_tick_time : "";
+      badge.textContent = "Stale" + (since ? " since " + since : "");
+      badge.dataset.badge = "LIVE";
+      badge.classList.remove("is-waiting");
+      badge.classList.add("is-stale");
+    }
+  } else if (st === "connecting") {
+    badge.textContent = "LIVE: waiting for ticks";
+    badge.dataset.badge = "LIVE";
+    badge.classList.remove("is-stale");
+    badge.classList.add("is-waiting");
+  } else if (st === "market_closed") {
+    badge.textContent = "Market closed";
+    badge.dataset.badge = "LIVE";
+    badge.classList.remove("is-stale");
+    badge.classList.add("is-waiting");
+  } else if (st === "token_expired") {
+    badge.textContent = "Token expired";
+    badge.dataset.badge = "DELAYED";
+  }
 }
 
 async function loadSources() {
@@ -561,6 +627,10 @@ function renderChart() {
       }, pane);
       state.series.oi.setData(oiPoints);
     }
+  }
+  const oiNote = byId("chart-oi-note");
+  if (oiNote) {
+    oiNote.hidden = !(state.indicators.oi && state.payload.oi && state.payload.oi.available);
   }
 
   if (state.indicators.orb && state.payload.orb) {
@@ -979,14 +1049,138 @@ async function pollLive() {
   }
 }
 
+function stopLiveStream() {
+  if (state.stream) {
+    state.stream.close();
+    state.stream = null;
+  }
+}
+
+function renderFeedStatus(data) {
+  const bar = byId("live-feed-bar");
+  if (!bar) return;
+  bar.hidden = state.source !== "kite_live";
+  if (state.source !== "kite_live") return;
+
+  const dot = byId("live-feed-dot");
+  if (dot) dot.dataset.state = data.state || "disconnected";
+  const stText = byId("live-feed-state");
+  if (stText) stText.textContent = "Feed: " + (data.state || "disconnected");
+  const syms = byId("live-feed-symbols");
+  if (syms) syms.textContent = "Subscribed: " + (data.subscribed || 1);
+  const reconnects = byId("live-feed-reconnects");
+  if (reconnects) reconnects.textContent = "Reconnects: " + (data.reconnect_count || 0);
+
+  const simControls = byId("sim-controls");
+  if (simControls) {
+    simControls.hidden = !state.isSimulated;
+  }
+}
+
+function renderTickLatency(data) {
+  const node = byId("live-feed-latency");
+  if (!node) return;
+  if (data.latency_ms !== null && data.latency_ms !== undefined) {
+    const ms = Math.max(1, Math.round(data.latency_ms));
+    node.textContent = "Latency: " + ms + " ms";
+  } else if (data.latency && data.latency.indexOf("sync") >= 0) {
+    node.textContent = "Latency: PC clock may be out of sync";
+  } else {
+    node.textContent = "Latency: " + (data.latency || "—");
+  }
+  const ttNode = byId("live-feed-tick-time");
+  if (ttNode && data.tick_time) {
+    ttNode.textContent = "Last tick: " + data.tick_time + " IST";
+  }
+}
+
+function startLiveStream() {
+  stopLiveStream();
+  if (state.source !== "kite_live" || !state.symbol) {
+    renderFeedStatus({ state: "disconnected" });
+    return;
+  }
+  renderFeedStatus({ state: "connecting" });
+  updateLiveBadge();
+
+  const url = "/api/chart/stream?source=kite_live&symbol=" + encodeURIComponent(state.symbol) + "&interval=" + state.interval;
+  const stream = new EventSource(url);
+  state.stream = stream;
+
+  stream.addEventListener("status", function (e) {
+    try {
+      const data = JSON.parse(e.data);
+      state.feedStatus = data;
+      renderFeedStatus(data);
+      updateLiveBadge();
+      if (data.state === "token_expired") {
+        message(data.reason || "Token expired. Reconnect on the Connect page.", "error");
+        state.source = "nse_delayed";
+        savePreferences();
+        stopLiveStream();
+        loadSources().then(function () {
+          loadSymbols().then(loadChart);
+        });
+      }
+    } catch (err) {}
+  });
+
+  stream.addEventListener("tick", function (e) {
+    try {
+      const data = JSON.parse(e.data);
+      state.lastTickTs = Date.now();
+      renderTickLatency(data);
+      updateLiveBadge();
+    } catch (err) {}
+  });
+
+  stream.addEventListener("forming", function (e) {
+    try {
+      const c = JSON.parse(e.data);
+      updateLivePoint(c);
+      if (state.payload && state.payload.freshness) {
+        state.payload.freshness.latest_time = c.ist ? c.ist.split(" ")[1] : state.payload.freshness.latest_time;
+        renderFreshness();
+      }
+    } catch (err) {}
+  });
+
+  stream.addEventListener("candle", function (e) {
+    try {
+      const c = JSON.parse(e.data);
+      updateLivePoint(c);
+      loadChart();
+    } catch (err) {}
+  });
+
+  stream.addEventListener("gap", function () {
+    message("Data gap detected and backfilled from history.", "warning");
+  });
+
+  stream.onerror = function () {
+    const dot = byId("live-feed-dot");
+    if (dot) dot.dataset.state = "disconnected";
+    const stText = byId("live-feed-state");
+    if (stText) stText.textContent = "Feed: reconnecting…";
+  };
+}
+
 function startLivePolling() {
   if (state.liveTimer !== null) {
     window.clearInterval(state.liveTimer);
+    state.liveTimer = null;
   }
+  if (state.source === "kite_live") {
+    startLiveStream();
+    return;
+  }
+  stopLiveStream();
+  const bar = byId("live-feed-bar");
+  if (bar) bar.hidden = true;
+
   const interval = state.source === "crypto_showcase" ? 2000
     : state.source === "nse_delayed" ? 10000 : 0;
   if (!interval) {
-    state.liveTimer = null;
     return;
   }
   state.liveTimer = window.setInterval(pollLive, interval);
@@ -1102,6 +1296,41 @@ function bindControls() {
       addWatchlist();
     }
   });
+
+  const btnDisc = byId("sim-btn-disconnect");
+  if (btnDisc) {
+    btnDisc.addEventListener("click", async function () {
+      try {
+        await api("/api/kite/simulate/disconnect", { method: "POST" });
+        message("Simulator disconnect triggered (will auto-reconnect).", "warning");
+      } catch (err) {
+        message(err.message, "error");
+      }
+    });
+  }
+  const btnExp = byId("sim-btn-expiry");
+  if (btnExp) {
+    btnExp.addEventListener("click", async function () {
+      try {
+        await api("/api/kite/simulate/token-expiry", { method: "POST" });
+        message("Simulator token expiry triggered.", "warning");
+      } catch (err) {
+        message(err.message, "error");
+      }
+    });
+  }
+  const btnRec = byId("sim-btn-reconnect");
+  if (btnRec) {
+    btnRec.addEventListener("click", async function () {
+      try {
+        await api("/api/kite/simulate/reconnect", { method: "POST" });
+        message("Simulator reconnected.", "ok");
+      } catch (err) {
+        message(err.message, "error");
+      }
+    });
+  }
+
   if (window.matchMedia) {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const listener = function () {
@@ -1148,6 +1377,12 @@ async function initChart() {
     return;
   }
   state.started = true;
+  try {
+    const about = await api("/api/about");
+    if (about && about.simulate_kite) {
+      state.isSimulated = true;
+    }
+  } catch (err) {}
   loadPreferences();
   applyPreferencesToControls();
   bindControls();

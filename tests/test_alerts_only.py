@@ -200,3 +200,18 @@ def test_c3_chart_package_and_assets_are_scanned() -> None:
     names = {path.name for path in ui_asset_files()}
     assert {"chart.js", "index.html", "styles.css"} <= names
     assert any(path.suffix == ".py" for path in package_files())
+
+
+def test_c4_live_feed_and_simulator_are_scanned_and_alerts_isolated() -> None:
+    """Live feed and simulator must never touch alert engine, store, or notifier."""
+    root = Path(kite_alerts.__file__).parent / "ui"
+    ui_files = {p.name for p in root.glob("*.py")}
+    assert {"live_feed.py", "simulator.py"} <= ui_files
+    for mod_name in ("live_feed.py", "simulator.py"):
+        text = (root / mod_name).read_text(encoding="utf-8").lower()
+        assert "from ..engine" not in text
+        assert "from .engine" not in text
+        assert "alertstore" not in text
+        assert "alert_store" not in text
+        assert "notifiers" not in text
+        assert "send_alert" not in text

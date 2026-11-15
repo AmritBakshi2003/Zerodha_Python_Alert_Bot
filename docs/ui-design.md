@@ -1,4 +1,4 @@
-# Dashboard design (C1 + C2 + C3 shipped)
+# Dashboard design (C1 + C2 + C3 + C4 shipped)
 
 C1 shipped a local, read-only dashboard with an offline demo player. C2 adds the
 sidebar layout, the settings form, guided notifications, and the
@@ -6,7 +6,9 @@ sidebar layout, the settings form, guided notifications, and the
 seven chart types, 1/3/5/15-minute timeframes, server-computed indicators, two
 free honest data sources (delayed NSE and a crypto showcase), the Demo replay,
 a watchlist, a five-rule signal meter, an IST market clock and PNG export.
-Kite live streaming remains C4.
+C4 adds the live Kite feed via WebSocket KiteTicker and SSE streaming, with
+forming candle updates, OI panel for futures, honest badge states, and an
+isolated offline simulator.
 
 Nothing here changes the signal rules, the engine, or the trading path: the
 project remains alerts-only and has no order API.
@@ -15,7 +17,7 @@ project remains alerts-only and has no order API.
 
 ```
 kite_alerts/ui/
-├── app.py              FastAPI factory, UiContext, JSON routes
+├── app.py              FastAPI factory, UiContext, JSON routes, SSE stream
 ├── security.py         loopback bind check, Host validation, CSP, origin check
 ├── history.py          read-only SQLite reader (mode=ro + PRAGMA query_only)
 ├── status.py           probes the bot's existing /health endpoint
@@ -25,6 +27,8 @@ kite_alerts/ui/
 ├── settings_schema.py  form metadata derived from the pydantic models
 ├── settings_store.py   atomic .env writes, validation, backups, rate limit
 ├── kite_connect.py     pending login, token exchange, session, data probe
+├── live_feed.py        KiteTicker websocket feed, candle builder, SSE throttling
+├── simulator.py        isolated market data simulator (--simulate-kite)
 ├── notifications.py    Telegram getUpdates -> chat id
 ├── server.py           validate host/port, build the app, run uvicorn
 ├── chart/
@@ -32,14 +36,14 @@ kite_alerts/ui/
 │   ├── transforms.py   true epochs, 3m resampling, Heikin-Ashi
 │   ├── resilience.py   cache, coalescing, jittered backoff, breaker
 │   ├── symbols.py      NSE/NIFTY/BANK NIFTY -> Yahoo tickers; NFO refused
-│   ├── sources.py      DelayedNSE, CryptoShowcase, Demo, Kite placeholder
+│   ├── sources.py      DelayedNSE, CryptoShowcase, Demo, KiteLiveSource
 │   └── service.py      indicators, freshness, signal meter, clock, watchlist
 └── static/
-    ├── index.html      sidebar + seven page sections
-    ├── styles.css      light/dark, keyboard focus, responsive, badges
+    ├── index.html      sidebar + seven page sections, live feed status bar
+    ├── styles.css      light/dark, keyboard focus, responsive, badges, sim controls
     ├── app.js          hash router, dashboard, history, help
     ├── dom.js          textContent-only DOM helpers and the fetch wrapper
-    ├── chart.js        Chart page: picker, series, polling, export, meter
+    ├── chart.js        Chart page: picker, series, SSE stream, OI note, meter
     ├── practice.js     demo player, first-run welcome, "Test my settings"
     ├── settings.js     generated form, save/check, notification guide
     ├── connect.js      wizard, status, manual fallback, data sources

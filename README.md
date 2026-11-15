@@ -63,24 +63,24 @@ setting up your own Kite connection. It is optional, reads your data, and never
 places orders.
 
 ```bash
-pip install -e ".[ui]"      # one-time: adds FastAPI + uvicorn
-kite-alerts ui --open       # opens http://127.0.0.1:8765 in your browser
+pip install -e ".[ui]"                  # one-time: adds FastAPI + uvicorn
+kite-alerts ui --open                   # opens http://127.0.0.1:8765 in your browser
+kite-alerts ui --simulate-kite --open   # offline testing: synthetic Kite live ticks, no account needed
 ```
 
 The left sidebar switches pages (each page has its own `#/` address, so a
 bookmark or refresh keeps you there). **Chart** is the landing page:
 
-- **Chart** — a read-only chart workstation. Choose Delayed NSE (default), the
-  Crypto showcase, or the Demo replay; Kite live is visible but disabled until
-  C4. Switch candles, hollow candles, Heikin-Ashi, OHLC bars, line, area or
-  baseline; 1/3/5/15-minute timeframes; toggle server-computed EMA, RSI, MACD,
-  volume, opening range and OI; zoom, scroll, crosshair OHLC, log scale,
-  fullscreen, PNG export (with the badge) and OS light/dark. A permanent badge
-  says `DELAYED`, `SHOWCASE`, `DEMO` or `LIVE`, the freshness line shows the real
-  candle age and measured provider delay, and a watchlist, five-rule signal meter
-  and IST market clock sit alongside. If a provider is unavailable the last data
-  stays visible and is marked stale. Nothing here sends an alert. See
-  [docs/data-sources.md](docs/data-sources.md).
+- **Chart** — a read-only chart workstation. Choose Delayed NSE (default),
+  Kite live (real ticks when connected or simulated via `--simulate-kite`),
+  Crypto showcase, or the Demo replay. Switch candles, hollow candles,
+  Heikin-Ashi, OHLC bars, line, area or baseline; 1/3/5/15-minute timeframes;
+  toggle server-computed EMA, RSI, MACD, volume, opening range and OI; zoom,
+  scroll, crosshair OHLC, log scale, fullscreen, PNG export (with the badge) and
+  OS light/dark. An honest badge says `LIVE`, `DELAYED`, `SHOWCASE`, `DEMO` or
+  `SIMULATED`. The live feed status bar shows connection state, latency, and
+  forming candles update in place as ticks arrive. Nothing here sends an alert. See
+  [docs/data-sources.md](docs/data-sources.md) and [docs/live-feed.md](docs/live-feed.md).
 - **Dashboard** — whether the bot is running (it asks the bot's existing
   `/health` endpoint), today's BUY and SELL counts, and a live feed of the latest
   alerts with the full reason.
@@ -148,7 +148,9 @@ The Chart page's delayed NSE data comes from the open-source `yfinance` package
 and is **unofficial and delayed**; it is never live Kite data. The crypto
 showcase uses a free, keyless public feed and is labelled `SHOWCASE`, not NSE.
 The meaning, delay, limits and provider licences are documented in
-[docs/data-sources.md](docs/data-sources.md). Kite live streaming is C4.
+[docs/data-sources.md](docs/data-sources.md). Real-time Kite live streaming (Phase C4)
+and the offline simulator are documented in [docs/live-feed.md](docs/live-feed.md).
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the project build history and future development roadmap.
 
 The dashboard only listens on your own computer (`127.0.0.1`), validates the
 `Host` header, serves a restrictive CSP with no CDN, requires a same-origin
@@ -275,8 +277,10 @@ src/kite_alerts/
 ├── persistence/    SQLite alert store (dedup ledger + engine state)
 ├── observability/  logging + redaction, Prometheus metrics, /health server
 ├── backtest/       replay through the same Engine, forward-return summary
+├── ui/             FastAPI dashboard, chart workstation, live feed & simulator
 ├── cli/            `kite-alerts` entry point
 └── demo.py         offline synthetic replay
+docs/               ROADMAP.md, data-sources.md, live-feed.md, ui-design.md
 legacy/             the original single-file prototype, reference only
 ```
 
@@ -352,8 +356,8 @@ when a contract has ≤2 days left.
 ```bash
 pip install -e ".[dev]"
 pytest --cov=kite_alerts          # coverage threshold is enforced (85%)
-ruff check && black --check src tests && mypy
-pre-commit install                # ruff, black, hygiene hooks + alerts-only guard
+ruff check && ruff format --check && mypy src/kite_alerts
+pre-commit install                # ruff, formatting, hygiene hooks + alerts-only guard
 ```
 
 `tests/fakes/fake_kite.py` provides `FakeKite` / `FakeTicker`, so the entire live

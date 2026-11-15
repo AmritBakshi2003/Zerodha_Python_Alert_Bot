@@ -185,6 +185,7 @@ class KiteConnectService:
     monotonic: Callable[[], float] = time.monotonic
     wall_clock: SystemClock = field(default_factory=SystemClock)
     state_ttl: float = STATE_TTL_SECONDS
+    feed_provider: Callable[[], Any] | None = None
     _pending: _Pending | None = field(default=None, init=False)
     _profile: tuple[str, float, SessionInfo] | None = field(default=None, init=False)
     _data: tuple[str, float, tuple[DataSource, ...]] | None = field(default=None, init=False)
@@ -410,6 +411,7 @@ class KiteConnectService:
         settings = self.settings_provider()
         token = settings.kite.token if settings is not None else ""
         now = self.monotonic()
+        feed = self.feed_provider() if self.feed_provider is not None else None
         if (
             not force
             and self._data is not None
@@ -418,7 +420,18 @@ class KiteConnectService:
         ):
             sources = self._data[2]
         else:
-            if not token:
+            if feed is not None and getattr(feed, "is_simulated", False):
+                live = DataSource(
+                    "kite_live",
+                    "Kite live (simulated)",
+                    True,
+                    "Simulated market data feed. Not real market data.",
+                    badge="SIMULATED",
+                    enabled=True,
+                    notice="SIMULATED, not real market data",
+                    supports_oi=True,
+                )
+            elif not token:
                 live = DataSource(
                     "kite_live",
                     "Kite live",
@@ -426,20 +439,46 @@ class KiteConnectService:
                     "Connect to Zerodha to use live Kite market data.",
                     badge="LIVE",
                     enabled=False,
-                    notice="Live Kite feed arrives in a later update (C4).",
+                    notice=(
+                        "Live Kite feed arrives in a later update (C4)."
+                        if feed is None
+                        else (
+                            "Connect to your Zerodha account with a market data "
+                            "plan to use live data."
+                        )
+                    ),
                     supports_oi=True,
                 )
             else:
                 assert settings is not None
                 available, reason = self._probe_live(settings, token)
+                if feed is None:
+                    notice = "Live Kite feed arrives in a later update (C4)."
+                    enabled = False
+                else:
+                    feed_status = feed.status()
+                    enabled = available
+                    if available:
+                        notice = "Live data available from your Kite account."
+                        if feed_status and feed_status.state == "live":
+                            notice = "Streaming live ticks from Kite."
+                        elif feed_status and feed_status.state == "connecting":
+                            notice = "Connecting to Kite live ticker..."
+                        elif feed_status and feed_status.state == "stale":
+                            notice = feed_status.reason or "Live feed is stale."
+                    else:
+                        notice = (
+                            f"{reason} Live Kite feed arrives in a later update (C4) "
+                            "if not connected."
+                        )
                 live = DataSource(
                     "kite_live",
                     "Kite live",
-                    available,
+                    available if feed is not None else False,
                     reason,
                     badge="LIVE",
-                    enabled=False,
-                    notice="Live Kite feed arrives in a later update (C4).",
+                    enabled=enabled,
+                    notice=notice,
                     supports_oi=True,
                 )
             sources = (
@@ -447,8 +486,7 @@ class KiteConnectService:
                     "nse_delayed",
                     "Delayed NSE",
                     True,
-                    "Delayed NSE quotes need no login and are used when live data is "
-                    "unavailable.",
+                    "Delayed NSE quotes need no login and are used when live data is unavailable.",
                     badge="DELAYED",
                     notice="Unofficial delayed data from a free public source. Not live.",
                 ),
@@ -471,9 +509,10 @@ class KiteConnectService:
                 ),
             )
             self._data = (token, now, sources)
+        is_sim = bool(feed and getattr(feed, "is_simulated", False))
         return {
             "sources": [source.as_dict() for source in sources],
-            "connected": bool(token),
+            "connected": bool(token) and not is_sim,
             "checked_at": self._now_label(),
         }
 

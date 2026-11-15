@@ -33,12 +33,14 @@ from __future__ import annotations
 import json
 import logging
 import math
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -155,6 +157,10 @@ class UiContext:
     kite_factory: Callable[[str, str], Any] = default_kite_factory
     http_get: Any = None
     chart: ChartService | None = None
+    feed: Any = None
+    simulator: Any = None
+    simulate_kite: bool = False
+    ticker_factory: Any = None
 
     def __post_init__(self) -> None:
         if self.settings_store is None:
@@ -166,7 +172,10 @@ class UiContext:
                 port=self.port,
                 on_change=self.reload,
                 kite_factory=self.kite_factory,
+                feed_provider=lambda: self.feed,
             )
+        else:
+            self.kite.feed_provider = lambda: self.feed
         if self.telegram is None:
             kwargs: dict[str, Any] = {}
             if self.http_get is not None:
@@ -177,6 +186,42 @@ class UiContext:
                 settings_provider=lambda: self.settings,
                 watchlist_path=self.env_file.parent / "data" / "chart_watchlist.json",
             )
+        if self.feed is None:
+            from .live_feed import LiveFeedService
+
+            def _make_ticker(api_key: str, access_token: str) -> Any:
+                if self.ticker_factory is not None:
+                    return self.ticker_factory(api_key, access_token)
+                from kiteconnect import KiteTicker
+
+                return KiteTicker(api_key, access_token)
+
+            def _make_kite_for_feed() -> Any:
+                if self.settings and self.settings.kite.api_key:
+                    return self.kite_factory(self.settings.kite.api_key, self.settings.kite.token)
+                return None
+
+            calendar = None
+            if self.chart is not None:
+                calendar = self.chart._calendar(self.settings)
+
+            self.feed = LiveFeedService(
+                ticker_factory=_make_ticker,
+                kite_factory=_make_kite_for_feed,
+                calendar=calendar,
+                is_simulated=self.simulate_kite,
+            )
+
+        if self.chart is not None and "kite_live" in self.chart.sources:
+            live_src = self.chart.sources["kite_live"]
+            if hasattr(live_src, "feed_provider"):
+                live_src.feed_provider = lambda: self.feed
+
+        if self.simulate_kite and self.simulator is None and self.feed is not None:
+            from .simulator import KiteSimulator
+
+            self.simulator = KiteSimulator(self.feed)
+            self.simulator.start()
 
     # ------------------------------------------------------------------ lifecycle
     def reload(self) -> None:
@@ -212,6 +257,9 @@ def build_context(
     kite_factory: Callable[[str, str], Any] = default_kite_factory,
     http_get: Any = None,
     chart: ChartService | None = None,
+    feed: Any = None,
+    ticker_factory: Any = None,
+    simulate_kite: bool = False,
 ) -> UiContext:
     """Load settings once; a broken ``.env`` must not stop the practice replay."""
     settings: Settings | None = None
@@ -244,6 +292,9 @@ def build_context(
         kite_factory=kite_factory,
         http_get=http_get,
         chart=chart,
+        feed=feed,
+        ticker_factory=ticker_factory,
+        simulate_kite=simulate_kite,
     )
 
 
@@ -295,15 +346,36 @@ def _practice_payload(timeline: DemoTimeline, version: str) -> dict[str, Any]:
 
 def create_app(context: UiContext) -> FastAPI:
     """Build the FastAPI app around an explicit context (no globals, easy to test)."""
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        yield
+        if context.simulator is not None:
+            context.simulator.stop()
+        if context.feed is not None:
+            context.feed.stop()
+
     app = FastAPI(
         title="kite-alerts dashboard",
         version=context.version,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=lifespan,
     )
     app.add_middleware(SecurityMiddleware)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        errors = []
+        for err in exc.errors():
+            item = dict(err)
+            item.pop("url", None)
+            errors.append(item)
+        return JSONResponse({"detail": errors}, status_code=422)
 
     def require_settings() -> Settings:
         if context.settings is None:
@@ -335,6 +407,7 @@ def create_app(context: UiContext) -> FastAPI:
             "settings_error": context.settings_error,
             "kite_configured": bool(settings and settings.kite.api_key),
             "token_present": bool(settings and settings.kite.token),
+            "simulate_kite": context.simulate_kite,
             "demo": True,
             "redirect_url": context.kite.redirect_url if context.kite else "",
         }
@@ -628,6 +701,103 @@ def create_app(context: UiContext) -> FastAPI:
             return JSONResponse(context.chart.remove_watchlist(payload.source, payload.symbol))
         except ChartError as exc:
             return chart_failure(exc)
+
+    @app.get("/api/chart/stream")
+    async def chart_stream(
+        request: Request,
+        source: Annotated[str, Query(max_length=32)] = "kite_live",
+        symbol: Annotated[str, Query(max_length=80)] = "",
+        interval: Annotated[int, Query(ge=1, le=15)] = 1,
+    ) -> StreamingResponse:
+        chart_guard()
+        if source != "kite_live":
+            raise HTTPException(
+                status_code=422,
+                detail="Streaming is only supported for the live Kite feed.",
+            )
+        if context.feed is None:
+            raise HTTPException(status_code=503, detail="Live feed service is not available.")
+        if len(context.feed._sse_clients) >= 50:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many concurrent stream connections. Try again later.",
+            )
+
+        from .live_feed import SSEClient
+
+        client = SSEClient(symbol=symbol, interval=interval)
+        context.feed.register_sse_client(client)
+
+        async def event_generator() -> AsyncIterator[str]:
+            import asyncio
+            import time
+
+            try:
+                st = context.feed.status().as_dict()
+                yield f"event: status\ndata: {json.dumps(st)}\n\n"
+
+                last_heartbeat = time.monotonic()
+                while not await request.is_disconnected():
+                    event = client.get(timeout=0.5)
+                    if event is not None:
+                        yield f"event: {event.event}\ndata: {json.dumps(event.data)}\n\n"
+                    now = time.monotonic()
+                    if now - last_heartbeat >= 15.0:
+                        last_heartbeat = now
+                        yield ": heartbeat\n\n"
+                    await asyncio.sleep(0.01)
+            finally:
+                context.feed.unregister_sse_client(client)
+                client.close()
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/chart/feed-status")
+    def chart_feed_status() -> JSONResponse:
+        chart_guard()
+        if context.feed is None:
+            return JSONResponse({"ok": False, "status": None, "is_simulated": False})
+        return JSONResponse(
+            {
+                "ok": True,
+                "status": context.feed.status().as_dict(),
+                "is_simulated": bool(
+                    context.simulate_kite or getattr(context.feed, "is_simulated", False)
+                ),
+            }
+        )
+
+    @app.post("/api/kite/simulate/disconnect")
+    def sim_disconnect(request: Request) -> JSONResponse:
+        require_same_origin(request)
+        if not context.simulate_kite or context.simulator is None:
+            raise HTTPException(status_code=400, detail="Simulator mode is not active.")
+        context.simulator.trigger_disconnect()
+        return JSONResponse({"ok": True, "action": "disconnect"})
+
+    @app.post("/api/kite/simulate/token-expiry")
+    def sim_token_expiry(request: Request) -> JSONResponse:
+        require_same_origin(request)
+        if not context.simulate_kite or context.simulator is None:
+            raise HTTPException(status_code=400, detail="Simulator mode is not active.")
+        context.simulator.trigger_token_expiry()
+        return JSONResponse({"ok": True, "action": "token_expiry"})
+
+    @app.post("/api/kite/simulate/reconnect")
+    def sim_reconnect(request: Request) -> JSONResponse:
+        require_same_origin(request)
+        if not context.simulate_kite or context.simulator is None:
+            raise HTTPException(status_code=400, detail="Simulator mode is not active.")
+        context.simulator.trigger_reconnect()
+        return JSONResponse({"ok": True, "action": "reconnect"})
 
     # -------------------------------------------------------------- notifications
     @app.post("/api/notifications/telegram/chat-id")

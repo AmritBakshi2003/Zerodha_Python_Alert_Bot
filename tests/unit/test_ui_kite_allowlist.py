@@ -41,9 +41,33 @@ FORBIDDEN_METHODS = (
     "trades",
     "quote",
     "ohlc",
+)
+
+#: All allowed KiteConnect and KiteTicker SDK calls across the UI package.
+UI_ALLOWED_KITE_METHODS = {
+    "login_url",
+    "generate_session",
+    "profile",
+    "ltp",
+    "invalidate_access_token",
+    "set_access_token",
     "historical_data",
     "instruments",
-)
+    "connect",
+    "subscribe",
+    "set_mode",
+    "unsubscribe",
+    "close",
+    "stop",
+    # our own KiteConnectService (context.kite), not the SDK client
+    "start",
+    "finish",
+    "session",
+    "disconnect",
+    "data_sources",
+    "pending_login_url",
+    "cancel_pending",
+}
 
 
 def connect_source() -> str:
@@ -107,6 +131,17 @@ def test_frontend_fetches_only_same_origin_paths() -> None:
         text = path.read_text(encoding="utf-8")
         for match in re.finditer(r"fetch\(\s*([^,\n]+)", text):
             target = match.group(1).strip()
-            assert target.startswith('"/') or target.startswith(
-                "path"
-            ), f"{path.name} fetches {target}"
+            valid = target.startswith('"/') or target.startswith("path")
+            assert valid, f"{path.name} fetches {target}"
+
+
+def test_ui_only_calls_allowlisted_kite_methods() -> None:
+    pattern = re.compile(r"\b(?:kite|ticker|self\._ticker|self\._client\([^)]*\))\.([a-z_]+)\(")
+    unexpected: set[str] = set()
+    for path in sorted(UI.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for match in pattern.finditer(text):
+            method = match.group(1)
+            if not method.startswith("_") and method not in UI_ALLOWED_KITE_METHODS:
+                unexpected.add(f"{path.name}: {method}")
+    assert not unexpected, f"unexpected Kite method(s) in UI: {unexpected}"

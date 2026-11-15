@@ -6,6 +6,7 @@ import datetime as dt
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from kite_alerts.core.calendar import TradingCalendar
@@ -16,8 +17,15 @@ from kite_alerts.ui.chart.sources import (
     DelayedNSESource,
     DemoSource,
     KiteLiveSource,
+    _delay_seconds,
+    _normalise_frame,
 )
-from kite_alerts.ui.chart.types import ChartError, SourceError
+from kite_alerts.ui.chart.types import Candle, ChartError, SourceError
+from kite_alerts.ui.live_feed import (
+    STATE_DISCONNECTED,
+    STATE_LIVE,
+    FeedStatus,
+)
 from unit.ui_support_c3 import make_chart_context, make_frame
 
 
@@ -168,6 +176,127 @@ class TestDemoAndKite:
         with pytest.raises(SourceError) as caught:
             source.fetch("NSE:TEST", 1, None)
         assert "later update" in caught.value.message
+
+    def test_kite_live_source_enabled_and_badge_properties(self) -> None:
+        source = KiteLiveSource()
+        source.enabled = True
+        assert source.enabled is True
+        source.badge = "CUSTOM"
+        assert source.badge == "CUSTOM"
+
+        # Using feed provider
+        class FakeFeed:
+            def __init__(self, state=STATE_LIVE, is_sim=False, reason=""):
+                self._st = state
+                self.is_simulated = is_sim
+                self._rs = reason
+
+            def status(self):
+                return FeedStatus(state=self._st, reason=self._rs)
+
+        feed = FakeFeed(state=STATE_LIVE)
+        s2 = KiteLiveSource(feed_provider=lambda: feed)
+        assert s2.enabled is True
+        assert s2.badge == "LIVE"
+
+        feed._st = STATE_DISCONNECTED
+        assert s2.enabled is False
+
+        feed_sim = FakeFeed(state=STATE_LIVE, is_sim=True)
+        s3 = KiteLiveSource(feed_provider=lambda: feed_sim)
+        assert s3.badge == "SIMULATED"
+        syms = s3.symbols(None)
+        assert len(syms) > 0
+        assert syms[0].symbol == "NSE:SIMULATED"
+
+    def test_kite_live_source_fetch_with_feed(self) -> None:
+        class FakeFeedWithData:
+            def __init__(self):
+                self.is_simulated = False
+                self._candles = [
+                    {
+                        "time": 1700000000,
+                        "open": 100.0,
+                        "high": 105.0,
+                        "low": 99.0,
+                        "close": 102.0,
+                        "volume": 10,
+                        "oi": 50.0,
+                    },
+                    {
+                        "time": 1700000060,
+                        "open": 102.0,
+                        "high": 106.0,
+                        "low": 101.0,
+                        "close": 104.0,
+                        "volume": 15,
+                        "oi": 60.0,
+                    },
+                ]
+
+            def status(self):
+                return FeedStatus(state=STATE_LIVE, latency_ms=5.0)
+
+            def bootstrap_data_for(self, symbol: str):
+                return self._candles
+
+        feed = FakeFeedWithData()
+        source = KiteLiveSource(feed_provider=lambda: feed)
+        assert source.enabled is True
+        res = source.fetch("NSE:INFY", 1, None)
+        assert len(res.candles) == 2
+        assert res.candles[0].open == 100.0
+        assert res.supports_oi is True
+
+        # Test empty candles raises waiting_for_ticks
+        feed._candles = []
+        with pytest.raises(SourceError) as caught:
+            source.fetch("NSE:INFY", 1, None)
+        assert "Waiting for live ticks" in caught.value.message
+
+    def test_kite_live_source_fetch_disabled_shows_feed_reason(self) -> None:
+        class FakeFeedDisconnected:
+            is_simulated = False
+
+            def status(self):
+                return FeedStatus(state=STATE_DISCONNECTED, reason="Server down")
+
+            def bootstrap_data_for(self, _):
+                return []
+
+        source = KiteLiveSource(feed_provider=lambda: FakeFeedDisconnected())
+        assert source.enabled is False
+        with pytest.raises(SourceError) as caught:
+            source.fetch("NSE:INFY", 1, None)
+        assert "Server down" in caught.value.message
+
+
+class TestNormaliseFrameAndDelay:
+    def test_normalise_frame_empty_or_none(self) -> None:
+        assert _normalise_frame(None).empty
+        assert _normalise_frame(pd.DataFrame()).empty
+
+    def test_normalise_frame_missing_columns(self) -> None:
+        df = pd.DataFrame({"open": [1.0], "close": [2.0]})
+        assert _normalise_frame(df).empty
+
+    def test_normalise_frame_with_and_without_volume(self) -> None:
+        df_vol = pd.DataFrame(
+            {"open": [1.0], "high": [2.0], "low": [0.5], "close": [1.5], "volume": [100]}
+        )
+        res = _normalise_frame(df_vol)
+        assert not res.empty
+        assert "volume" in res.columns
+
+        df_no_vol = pd.DataFrame({"open": [1.0], "high": [2.0], "low": [0.5], "close": [1.5]})
+        res2 = _normalise_frame(df_no_vol)
+        assert not res2.empty
+        assert res2["volume"].iloc[0] == 0.0
+
+    def test_delay_seconds_calculation(self) -> None:
+        assert _delay_seconds((), 1, 1000.0) is None
+        c = Candle(time=1000, open=1.0, high=2.0, low=0.5, close=1.5, volume=10.0)
+        assert _delay_seconds((c,), 1, 1100.0) == 40.0
 
 
 class TestWatchlist:

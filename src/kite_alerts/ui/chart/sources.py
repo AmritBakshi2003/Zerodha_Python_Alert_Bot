@@ -16,6 +16,7 @@ import pandas as pd
 import requests
 
 from ...config.settings import Settings
+from ...core.clock import IST, to_ist_ts
 from ...demo import synthetic_day
 from .resilience import ProviderCache
 from .symbols import (
@@ -315,18 +316,147 @@ class DemoSource:
 class KiteLiveSource:
     id: str = "kite_live"
     label: str = "Kite live"
-    badge: str = "LIVE"
     supports_oi: bool = True
-    enabled: bool = False
     session_based: bool = True
+    feed_provider: Callable[[], Any] | None = None
+    _enabled: bool | None = None
+    _badge: str | None = None
+
+    @property
+    def enabled(self) -> bool:
+        if self._enabled is not None:
+            return self._enabled
+        try:
+            from ..live_feed import (
+                STATE_DISCONNECTED,
+                STATE_NO_PLAN,
+                STATE_TOKEN_EXPIRED,
+            )
+
+            feed = self.feed_provider() if self.feed_provider else None
+            if feed is None:
+                return False
+            st = feed.status().state
+            return st not in (STATE_DISCONNECTED, STATE_NO_PLAN, STATE_TOKEN_EXPIRED)
+        except Exception:
+            return False
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        self._enabled = value
+
+    @property
+    def badge(self) -> str:
+        if self._badge is not None:
+            return self._badge
+        try:
+            feed = self.feed_provider() if self.feed_provider else None
+            if feed is not None and getattr(feed, "is_simulated", False):
+                return "SIMULATED"
+        except Exception:
+            pass
+        return "LIVE"
+
+    @badge.setter
+    def badge(self, value: str) -> None:
+        self._badge = value
 
     def symbols(self, settings: Settings | None) -> tuple[SymbolInfo, ...]:
-        return ()
+        try:
+            feed = self.feed_provider() if self.feed_provider else None
+            if feed is not None and getattr(feed, "is_simulated", False):
+                from ..simulator import SIMULATOR_SYMBOLS
+
+                return SIMULATOR_SYMBOLS
+        except Exception:
+            pass
+        configured = settings.symbols if settings is not None else ()
+        if not configured:
+            from .symbols import DEFAULT_NSE_SYMBOLS
+
+            configured = DEFAULT_NSE_SYMBOLS
+        res: list[SymbolInfo] = []
+        for s in configured:
+            sym = str(s).strip().upper()
+            label = sym.split(":", 1)[1] if ":" in sym else sym
+            res.append(SymbolInfo(sym, label, sym))
+        return tuple(res)
 
     def fetch(self, symbol: str, interval: int, settings: Settings | None) -> SourceSeries:
-        raise SourceError(
-            "Live Kite feed arrives in a later update (C4). The delayed NSE source " "works now.",
-            code="coming_soon",
+        feed = self.feed_provider() if self.feed_provider else None
+        if feed is None:
+            msg = "Live Kite feed arrives in a later update (C4). The delayed NSE source works now."
+            raise SourceError(msg, code="coming_soon")
+        if not self.enabled:
+            reason = "Live Kite feed is not currently connected."
+            if feed is not None:
+                st = feed.status()
+                if st.reason:
+                    reason = st.reason
+            raise SourceError(reason, code="feed_unavailable")
+
+        raw_list = feed.bootstrap_data_for(symbol)
+        candles: list[Candle] = []
+        for item in raw_list:
+            if isinstance(item, dict):
+                candles.append(
+                    Candle(
+                        time=int(item["time"]),
+                        open=float(item["open"]),
+                        high=float(item["high"]),
+                        low=float(item["low"]),
+                        close=float(item["close"]),
+                        volume=float(item.get("volume", 0.0)),
+                        oi=float(item["oi"]) if item.get("oi") is not None else None,
+                    )
+                )
+
+        builder = getattr(feed, "_builder", None)
+        if builder is not None:
+            try:
+                now_ist = pd.Timestamp.now(tz=IST)
+                pending_candles = builder.pending(now_ist + pd.Timedelta(minutes=1))
+                seen_times = {c.time for c in candles}
+                for pc in pending_candles:
+                    if pc.symbol.upper() == symbol.upper():
+                        epoch = int(to_ist_ts(pc.time).timestamp())
+                        if epoch not in seen_times:
+                            candles.append(
+                                Candle(
+                                    time=epoch,
+                                    open=float(pc.open),
+                                    high=float(pc.high),
+                                    low=float(pc.low),
+                                    close=float(pc.close),
+                                    volume=float(pc.volume),
+                                    oi=float(pc.oi) if pc.oi else None,
+                                )
+                            )
+                            seen_times.add(epoch)
+            except Exception:
+                pass
+
+        candles.sort(key=lambda c: c.time)
+        if not candles:
+            raise SourceError(
+                f"Waiting for live ticks for {symbol}...",
+                code="waiting_for_ticks",
+                retry_after=2.0,
+            )
+
+        c_tuple = tuple(candles)
+        if interval != 1:
+            c_tuple = resample_candles(c_tuple, interval)
+
+        has_oi = any(c.oi is not None and c.oi > 0 for c in c_tuple)
+        st = feed.status()
+        return SourceSeries(
+            candles=c_tuple,
+            provider_interval=1,
+            supports_oi=has_oi,
+            delay_seconds=0.0,
+            stale=(st.state == "stale"),
+            message=st.reason if st.state == "stale" else "",
         )
 
 

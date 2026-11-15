@@ -13,11 +13,9 @@ store.
 | Delayed NSE (default) | `DELAYED` | No, unofficial and delayed | No | No |
 | Crypto showcase | `SHOWCASE` | Forming candle, about 1–2 s | No | No |
 | Demo replay | `DEMO` | No, synthetic | Yes (synthetic) | No |
-| Kite live | `LIVE` | **Not in C3** | — | Later (C4) |
+| Kite live | `LIVE` / `SIMULATED` | Yes (real ticks) / Synthetic | Yes (NFO futures/options) | Yes (Zerodha account + data plan), or `--simulate-kite` |
 
-`Kite live` stays visible in the picker but disabled with the tooltip "Live Kite
-feed arrives in a later update (C4)." This is deliberate: C3 does not open a Kite
-websocket and does not use a Kite market-data plan.
+`Kite live` becomes enabled when your Kite credentials and active daily access token exist, and the data-plan probe confirms market data is active on your plan. In testing mode (`--simulate-kite`), it uses synthetic in-memory ticks and displays a permanent purple `SIMULATED` badge. See [docs/live-feed.md](live-feed.md) for architecture and subscription limits.
 
 ## Delayed NSE
 
@@ -96,6 +94,16 @@ from that frame. It has one symbol, `DEMO:FUT`, and synthetic OI, so the OI pane
 can be demonstrated. Nothing is persisted and no alert is produced; the demo page
 and the CLI remain the replay path that runs the real engine.
 
+## Kite live
+
+**Service.** `LiveFeedService` under `src/kite_alerts/ui/live_feed.py`. Streams real-time ticks into 1-minute forming candles using `CandleBuilder`, resamples higher timeframes (such as 3m), and pushes throttled events to browser clients over Server-Sent Events (`/api/chart/stream`).
+
+**Honest Badges.** Green `LIVE` appears strictly when real ticks are arriving within a 30-second window during open market hours. Outside market hours, `"Market closed"` is displayed; when delayed or disconnected, amber `"Stale since HH:MM:SS"` or `"LIVE: waiting for ticks"` is shown.
+
+**Simulator.** Started with `kite-alerts ui --simulate-kite`. Renders a permanent purple `SIMULATED` badge and exercises the entire pipeline (equity, futures OI, disconnects, token expiry) offline without Zerodha credentials.
+
+For details, limits, and the Twisted reactor singleton design, see [docs/live-feed.md](live-feed.md).
+
 ## Interface: adding another source
 
 Every adapter implements the small `ChartSource` protocol in
@@ -103,16 +111,15 @@ Every adapter implements the small `ChartSource` protocol in
 
 ```python
 class ChartSource(Protocol):
-    id: str              # stable picker id, e.g. "nse_delayed"
-    label: str           # human label
-    badge: str           # DELAYED / SHOWCASE / DEMO / LIVE
+    id: str  # stable picker id, e.g. "nse_delayed"
+    label: str  # human label
+    badge: str  # DELAYED / SHOWCASE / DEMO / LIVE
     supports_oi: bool
-    enabled: bool        # False keeps it visible but disabled
+    enabled: bool  # False keeps it visible but disabled
     session_based: bool  # False: do not pretend an NSE ORB applies
 
     def symbols(self, settings: Settings | None) -> tuple[SymbolInfo, ...]: ...
-    def fetch(self, symbol: str, interval: int,
-              settings: Settings | None) -> SourceSeries: ...
+    def fetch(self, symbol: str, interval: int, settings: Settings | None) -> SourceSeries: ...
 ```
 
 `fetch` returns normalised `Candle` objects with a true UTC epoch `time` and at

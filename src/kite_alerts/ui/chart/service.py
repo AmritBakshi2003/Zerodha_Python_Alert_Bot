@@ -193,7 +193,7 @@ def build_signal(
         summary = f"{agree} of 5 agree ({side})"
         if waiting:
             summary += f", waiting for {waiting}"
-    label = f"Informational, based on {source_label} data. " "No alerts are sent from this source."
+    label = f"Informational, based on {source_label} data. No alerts are sent from this source."
     return SignalMeter(summary=summary, side=side, agree=agree, rules=tuple(rows), label=label)
 
 
