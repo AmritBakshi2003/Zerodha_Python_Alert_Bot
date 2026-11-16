@@ -51,6 +51,8 @@ rules the hard way. The full audit and phase plan lives in `IMPLEMENTATION.md`.
 3. Commit the failing tests first, then the fix, then run:
    * `py -3 -m pytest --cov=kite_alerts -q` (full suite, coverage floor 85%)
    * `py -3 -m ruff check src tests && py -3 -m ruff format --check src tests`
+   * `py -3 -m black --check src tests scripts` (CI runs all three dirs;
+     black and ruff format can disagree — make the code satisfy both)
    * `py -3 -m mypy src/kite_alerts`
    * `py -3 -m pytest tests/test_alerts_only.py -q`
 4. Update `IMPLEMENTATION.md` (status table + findings) as part of the phase.
