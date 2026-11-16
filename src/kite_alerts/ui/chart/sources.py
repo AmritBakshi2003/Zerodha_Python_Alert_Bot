@@ -10,6 +10,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Protocol
 
 import pandas as pd
@@ -322,24 +323,58 @@ class KiteLiveSource:
     _enabled: bool | None = None
     _badge: str | None = None
 
+    def _view(self) -> Any:
+        """The feed's availability answer, or ``None`` when it cannot speak.
+
+        A feed with an ``availability()`` method owns every word and badge this
+        source shows (F5); older doubles that only have ``status()`` fall back
+        to a state→badge map so they can never invent a fresh "LIVE".
+        """
+        feed = self.feed_provider() if self.feed_provider else None
+        if feed is None:
+            return None
+        availability = getattr(feed, "availability", None)
+        if availability is not None:
+            return availability()
+        # Legacy: derive the same shape from status() so the badge stays honest.
+        status = feed.status()
+        from ..live_feed import _BADGE_BY_STATE
+
+        state = str(getattr(status, "state", "") or "")
+        badge = _BADGE_BY_STATE.get(state, "LIVE" if not state else "OFF")
+        notice = str(getattr(status, "reason", "") or "")
+        return SimpleNamespace(
+            state=state,
+            enabled=state not in ("disconnected", "no_plan", "token_expired"),
+            badge=badge,
+            notice=notice,
+        )
+
+    @property
+    def availability_state(self) -> str:
+        """The feed state this source was rendered from ("" when unknown)."""
+        if self._enabled is not None and self.feed_provider is None:
+            return ""
+        try:
+            view = self._view()
+            if view is not None:
+                return str(getattr(view, "state", "") or "")
+        except Exception:
+            return ""
+        return ""
+
     @property
     def enabled(self) -> bool:
         if self._enabled is not None:
             return self._enabled
         try:
-            from ..live_feed import STATE_DISCONNECTED, STATE_NO_PLAN, STATE_TOKEN_EXPIRED
-
-            feed = self.feed_provider() if self.feed_provider else None
-            if feed is None:
-                return False
-            availability = getattr(feed, "availability", None)
-            if availability is not None:
+            view = self._view()
+            if view is not None:
                 # One answer for every surface (F5).
-                return bool(availability().enabled)
-            st = feed.status().state
-            return st not in (STATE_DISCONNECTED, STATE_NO_PLAN, STATE_TOKEN_EXPIRED)
+                return bool(view.enabled)
         except Exception:
             return False
+        return False
 
     @enabled.setter
     def enabled(self, value: bool) -> None:
@@ -349,15 +384,12 @@ class KiteLiveSource:
     def notice(self) -> str:
         """The sentence every surface shows for this source, or an empty string."""
         try:
-            feed = self.feed_provider() if self.feed_provider else None
-            if feed is None:
-                return "Connect to Zerodha to use live Kite market data."
-            availability = getattr(feed, "availability", None)
-            if availability is not None:
-                return str(availability().notice)
+            view = self._view()
+            if view is not None:
+                return str(getattr(view, "notice", "") or "")
         except Exception:
             return ""
-        return ""
+        return "Connect to Zerodha to use live Kite market data."
 
     @property
     def badge(self) -> str:
@@ -367,6 +399,9 @@ class KiteLiveSource:
             feed = self.feed_provider() if self.feed_provider else None
             if feed is not None and getattr(feed, "is_simulated", False):
                 return "SIMULATED"
+            view = self._view()
+            if view is not None:
+                return str(getattr(view, "badge", "") or "OFF")
         except Exception:
             pass
         return "LIVE"

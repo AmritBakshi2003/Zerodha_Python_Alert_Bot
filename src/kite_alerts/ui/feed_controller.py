@@ -57,6 +57,13 @@ class FeedController:
         kite = settings.kite
         if not kite.api_key or not kite.token:
             return False
+        state = self.feed.status().state
+        if state in TERMINAL_STATES and self.feed.has_credentials(kite.api_key, kite.token):
+            # N1: the feed has already said token_expired / no_plan for exactly
+            # these credentials. Rebuilding would flip the surfaces back to
+            # "Connecting..." with the same dead token or the same missing plan.
+            log.info("live feed: %s; waiting for a reconnect or a new plan", state)
+            return False
 
         try:
             with self._lock:

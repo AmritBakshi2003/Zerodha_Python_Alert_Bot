@@ -328,23 +328,45 @@ function updateLiveBadge() {
     } else {
       const since = state.feedStatus && state.feedStatus.last_tick_time ? state.feedStatus.last_tick_time : "";
       badge.textContent = "Stale" + (since ? " since " + since : "");
-      badge.dataset.badge = "LIVE";
+      badge.dataset.badge = "STALE";
+      badge.title = "No fresh tick yet; showing the last known candles";
       badge.classList.remove("is-waiting");
       badge.classList.add("is-stale");
     }
   } else if (st === "connecting") {
-    badge.textContent = "LIVE: waiting for ticks";
-    badge.dataset.badge = "LIVE";
+    badge.textContent = "Connecting...";
+    badge.dataset.badge = "CONNECTING";
+    badge.title = "Connecting to the Kite live ticker";
     badge.classList.remove("is-stale");
     badge.classList.add("is-waiting");
+  } else if (st === "stale") {
+    const since = state.feedStatus && state.feedStatus.last_tick_time ? state.feedStatus.last_tick_time : "";
+    badge.textContent = "Stale" + (since ? " since " + since : "");
+    badge.dataset.badge = "STALE";
+    badge.title = "No fresh tick yet; showing the last known candles";
+    badge.classList.remove("is-waiting");
+    badge.classList.add("is-stale");
   } else if (st === "market_closed") {
     badge.textContent = "Market closed";
-    badge.dataset.badge = "LIVE";
+    badge.dataset.badge = "CLOSED";
+    badge.title = "Live ticks resume at 09:15 IST";
     badge.classList.remove("is-stale");
     badge.classList.add("is-waiting");
   } else if (st === "token_expired") {
     badge.textContent = "Token expired";
-    badge.dataset.badge = "DELAYED";
+    badge.dataset.badge = "EXPIRED";
+    badge.title = "Reconnect on the Connect page to use live data";
+    badge.classList.remove("is-waiting", "is-stale");
+  } else if (st === "no_plan") {
+    badge.textContent = "No plan";
+    badge.dataset.badge = "NO PLAN";
+    badge.title = "This Kite plan has no market data; delayed NSE is used";
+    badge.classList.remove("is-waiting", "is-stale");
+  } else {
+    badge.textContent = "OFF";
+    badge.dataset.badge = "OFF";
+    badge.title = "Live feed is not connected";
+    badge.classList.remove("is-waiting", "is-stale");
   }
 }
 
