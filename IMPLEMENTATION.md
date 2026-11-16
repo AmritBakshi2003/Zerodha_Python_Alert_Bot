@@ -8,6 +8,57 @@ numpy 2.4.6, `kiteconnect` from PyPI, repo installed with `pip install -e ".[dev
 Every claim below carries a `file:line` or a command output. Anything I could not
 run is listed as UNVERIFIED in section 8 rather than asserted.
 
+**This document is also the live status register**: each implementation phase
+updates the snapshot table below (§0) and the findings it closes. Sections 2–9
+describe the audit *as it was written* against `233ed87`; the snapshot table and
+the N findings (§2.N) describe what actually shipped, branch by branch.
+
+---
+
+## 0. Status snapshot (updated by every phase)
+
+Verified on branch `fix/p0-1-chart-state` (base `main` = `fe30686`), Python
+3.14.7, 826 tests collected and the full suite green, coverage **91.30%**
+(floor 85%), `ruff check` + `ruff format --check` clean, `mypy src/kite_alerts`
+clean (82 source files), and `tests/test_alerts_only.py` green.
+
+| Item | Status | Where |
+|---|---|---|
+| F1 feed never started | **DONE** (P0, PR #19) | `ui/feed_controller.py` |
+| F2 subscribe before on_connect | **DONE** (P0, PR #19) | `ui/live_feed.py` |
+| F3 official holiday list | **PARTIAL** — parser + script shipped; NSE blocks scripted fetches, owner must run `scripts/refresh_holidays.py` once (N4) | `config/holidays.yaml` |
+| F4 market clock | **DONE** (P1, PR #20) | `core/calendar.py`, `ui/status.py` |
+| F5 one availability truth | **DONE** (P0.1, this branch) | `ui/live_feed.py availability()`, read by every surface |
+| F6 mutations without Origin | not started (P2) | — |
+| F7 `.env.tmp` in messages | not reproduced | §2.7 |
+| F8 nanosecond UserWarning | not started (P2) | — |
+| F9 release workflow | not started (P3) | — |
+| F10 CI misses 3.14 | not started (P3) | — |
+| F11 product path under-tested | not started (P4) | — |
+| F12 files too large | not started (P5) | — |
+| F13 documentation drift | not started (P6) | — |
+| F14 relative paths | not started (P2) | — |
+| F15 no frontend tests | not started (P4) | — |
+| F16 delayed/crypto vs real providers | not started (P3) | — |
+| F17 SSE blocks the event loop | **DONE** fix on `main`; P0.1 adds the lifecycle tests that guard it (N3) | `ui/app.py` stream |
+| F18 notifier queue unbounded | not started (**assigned to P2**) | — |
+| F19 forming candle from wall clock | **DONE** (P0, PR #19) | `ui/live_feed.py` |
+| F20 stop() poisons the feed | **DONE** (P0, PR #19) | `ui/live_feed.py` |
+| F21 watchlist write race | not started (**assigned to P2b**) | — |
+| F22 unsynchronised shared dicts | not started (**assigned to P2b**) | — |
+| F23 golden-file line endings | not started (**assigned to P3**) | — |
+| F24 backoff constants unused | **DONE** (P0, PR #19) | `ui/live_feed.py` |
+| F25 calendar cache by identity | not started (**assigned to P3**) | — |
+| F26 `.env` read-modify-write race | not started (folded into P2) | — |
+| N1 surfaces lie after token expiry | **DONE** (P0.1, this branch) | §2.N |
+| N2 data-sources 60 s lag | **DONE** (P0.1, this branch) | §2.N |
+| N3 SSE loop untested | **DONE** (P0.1, this branch; tests pass on `main` by design) | §2.N |
+| N4 holiday list empty on this machine | **RECORDED** — manual owner step | §2.N |
+| N5 phase assignments for leftover findings | **RECORDED** | §2.N |
+
+Phase assignment record (N5, per owner instruction): F18 → **P2**;
+F21, F22 → **P2b** (new concurrency phase); F23, F25 → **P3**.
+
 ---
 
 ## 1. Scope, non-goals, how verification was done
@@ -783,6 +834,102 @@ mid-write; second writer proceeds).
 **Risk / rollback.** Local to two modules; revert restores today's behaviour.
 ---
 
+## 2.N Findings from the connected-user walkthrough (P0.1)
+
+These were found *after* the Stage 1 audit, by walking the code paths a real
+connected user takes (login → start → live → mid-session token expiry) with a
+strict fake socket. Reproduced on `main` = `fe30686` with a throwaway script;
+the script's output is quoted here and in the PR.
+
+### N1 — HIGH — after a mid-session token expiry, every surface kept saying LIVE
+
+Repro output on `main` (strict fake ticker; a fresh tick was pushed, then a
+403 `TokenException` was raised mid-session):
+
+```
+STEP connecting data-sources: LIVE | True | Connecting to the Kite live ticker...
+STEP live candles status: 200
+STEP live payload: badge= LIVE | notice= Streaming live ticks from Kite. | feed_state key present? False
+STEP expiry feed state: token_expired
+N1 AFTER-EXPIRY candles status: 200
+N1 AFTER-EXPIRY payload: badge= LIVE | notice= Connecting to the Kite live ticker... | state= <missing>
+tickers created: 2
+```
+
+Three lies in one response: the candles endpoint answered **200 with badge
+`LIVE`** for a feed whose token had just died, the notice was the stale
+"Connecting to the Kite live ticker..." string, the payload carried **no feed
+state at all**, and the chart poll **built a second ticker with the same dead
+token** (`chart_candles` → `FeedController.ensure_started()` → `start()`,
+which happily restarted). The `KiteLiveSource.badge` property was hard-coded
+"LIVE" except for the simulator, and `updateLiveBadge` in `chart.js` had no
+branch for `stale`, `no_plan` or `disconnected`.
+
+Fixed on this branch:
+
+* `live_feed.py`: `_BADGE_BY_STATE` — one badge per feed state; "LIVE" appears
+  only for fresh-tick `live`. `start()` refuses a restart with unchanged
+  credentials while in `token_expired`/`no_plan`; `has_credentials()` exposes
+  the check; `set_token_expired()` is idempotent; `_on_noreconnect` keeps the
+  `token_expired` state instead of regressing to `disconnected`.
+* `feed_controller.py`: `ensure_started()` early-returns `False` for a terminal
+  state whose credentials are unchanged (so a chart poll can no longer restart
+  a dead feed; a *fresh login* still restarts it — tested).
+* `chart/service.py`: the candles and symbols payloads carry `feed_state`.
+* `chart/sources.py`: `KiteLiveSource` reads badge/notice/enabled from the one
+  availability view (legacy doubles without `availability()` fall back to a
+  state→badge map, so the pinned `STATE_LIVE → "LIVE"` behaviour is kept).
+* `chart.js`: `updateLiveBadge` branches for connecting/stale/market_closed/
+  token_expired/no_plan/disconnected; only the fresh-tick branch renders "LIVE".
+* `styles.css`: visible styles for CONNECTING/STALE/CLOSED/EXPIRED/NO PLAN/OFF.
+
+### N2 — MED — `/api/data-sources` lagged reality by up to 60 s
+
+`data_sources()` cached the **whole payload** (token, timestamp, sources) for
+`DATA_TTL_SECONDS` = 60. Same repro, no `?refresh=1`:
+
+```
+STEP live data-sources: LIVE | True | Connecting to the Kite live ticker...   <- while streaming
+N2 AFTER-EXPIRY data-sources: LIVE | True | Connecting to the Kite live ticker...  <- 1 min after expiry
+```
+
+The picker advertised "Connecting..." while ticks were flowing and "LIVE" for
+a minute after the token died. Fixed: only the **plan probe** is cached now
+(token + TTL, `?refresh=1` still bypasses it — the probe is the only network
+call); every badge/notice/enabled/`state` is recomputed from
+`feed.availability()` on each call. `DataSource` gained a `state` field so the
+picker can show exactly which feed state it rendered.
+
+### N3 — MED — the SSE stream loop had no tests at all
+
+On `main`, `ui/app.py` lines 762-787 (the `chart_stream` loop: the
+`asyncio.to_thread` drain and `admit_sse_client` cap, i.e. the whole F17 fix)
+had **0% coverage**. `tests/unit/test_sse_stream_lifecycle.py` now drives the
+raw ASGI interface with a strict fake socket: responsiveness while one client
+is slow (and `SSEClient.get` never runs on the event-loop thread), the 50-client
+cap enforced under a barrier race, clean disconnect/unregister, and no leaked
+threads across sequential streams. **These pass on `main`** — they guard the
+existing F17 fix and are documented as such in the module docstring; the
+P0.1-specific failures were the badge-truth tests.
+
+### N4 — LOW — the holiday list is empty on this machine, by design
+
+`scripts/refresh_holidays.py` exists and its HTML parser is fixture-tested
+(`tests/unit/test_calendar_holidays.py`, 12 tests, green). The live fetch
+cannot be verified here: `https://www.nseindia.com/...` completes the TLS
+handshake and then the **read times out** (NSE drops non-browser clients).
+Per the audit rule (never invent holiday dates), `config/holidays.yaml` stays
+empty, the startup warning stays, and running the script once manually against
+the official page is recorded as an owner step (also listed in §8.1).
+
+### N5 — INFO — phase assignments for the leftover findings
+
+Per owner instruction: **F18 → P2**, **F21, F22 → P2b** (a new phase for the
+concurrency clean-ups), **F23, F25 → P3**. The snapshot table in §0 records
+this so the phased plan matches what will actually be built next.
+
+---
+
 ## 3. Concurrency design
 
 ### 3.a Thread inventory
@@ -1283,6 +1430,11 @@ route through it.
 - [ ] Delayed NSE (`yfinance`) and crypto (Kraken) adapters against live endpoints
       (F16 script exists only after P3).
 - [ ] Latency/clock skew on the owner's PC.
+- [ ] The official NSE holiday fetch (N4): TLS connects, the read times out for
+      scripted clients — `scripts/refresh_holidays.py` must be run once by the
+      owner against the live page (or with a saved `--html` page) and its diff
+      reviewed. Until then `config/holidays.yaml` stays empty and the startup
+      warning stays on.
 
 ### 8.2 Risks of this plan
 
