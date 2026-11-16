@@ -530,7 +530,10 @@ class TestAllSurfacesAgree:
         # Restore the market-open assumption the market-closed step overrode, so
         # the token-expired transition is evaluated in an open-market context.
         harness.feed._market_is_open = lambda: True  # type: ignore[method-assign]
-        harness.ticker.error(403, "TokenException: token is invalid")
+        harness.feed._last_tick_time = 0.0
+        ticker = harness.feed._ticker
+        assert ticker is not None
+        ticker.error(403, "TokenException: token is invalid")
         deadline = time.monotonic() + 5.0
         live: dict[str, Any] | None = None
         while live is None or live.get("state") != STATE_TOKEN_EXPIRED:
