@@ -19,6 +19,7 @@ Covered here:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 from pathlib import Path
@@ -233,11 +234,18 @@ class TestStreamDisconnect:
 
 
 class TestNoThreadLeak:
-    def test_sequential_streams_reuse_one_executor(self, tmp_path: Path) -> None:
+    def test_sequential_streams_share_one_bounded_executor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """No per-stream executors: every stream shares the loop's one executor.
 
-        Deterministic on purpose. Two things are guaranteed by
-        ``concurrent.futures`` and asserted here, with no reliance on OS thread
+        Deterministic on purpose. The stream generator checks
+        ``request.is_disconnected()`` *before* its first ``to_thread`` get, so a
+        disconnect that arrives too early can end a stream without the executor
+        ever being used. Each stream here therefore first waits (via an event
+        raised from inside ``SSEClient.get``) until one worker-thread get has
+        really happened, and only then disconnects. What is asserted afterwards
+        is guaranteed by ``concurrent.futures``, with no reliance on OS thread
         lifetimes:
 
         * the loop's default executor is *one object* for every stream (a
@@ -255,24 +263,41 @@ class TestNoThreadLeak:
         async def scenario() -> None:
             context = _context_for(tmp_path)
             app = create_app(context)
+            loop = asyncio.get_running_loop()
 
-            for _ in range(3):
+            get_calls: list[str] = []
+            worker_get_ran = asyncio.Event()
+            original_get = SSEClient.get
+
+            def recording_get(self: SSEClient, timeout: float = 15.0) -> Any:
+                get_calls.append(threading.current_thread().name)
+                with contextlib.suppress(RuntimeError):  # loop may already close
+                    loop.call_soon_threadsafe(worker_get_ran.set)
+                return original_get(self, timeout)
+
+            monkeypatch.setattr(SSEClient, "get", recording_get)
+
+            async def one_stream() -> None:
+                worker_get_ran.clear()
                 socket, task = await _start_stream(app)
                 await _first_event(socket)
+                # The generator's status event precedes its first get, so this
+                # wait cannot be satisfied without a real to_thread cycle.
+                await asyncio.wait_for(worker_get_ran.wait(), 5)
                 await socket.disconnect()
                 await asyncio.wait_for(task, 5)
 
-            loop = asyncio.get_running_loop()
+            for _ in range(3):
+                await one_stream()
+
             executor = getattr(loop, "_default_executor", None)
             assert executor is not None, "the stream must run SSEClient.get in the loop's executor"
 
             for _ in range(3):
-                socket, task = await _start_stream(app)
-                await _first_event(socket)
-                await socket.disconnect()
-                await asyncio.wait_for(task, 5)
+                await one_stream()
 
             message = "each stream must share the loop's one bounded executor"
+            assert len(get_calls) >= 6, "every stream must perform at least one worker-thread get"
             assert getattr(loop, "_default_executor", None) is executor, message
             assert len(getattr(executor, "_threads", set())) <= executor._max_workers, message
 
