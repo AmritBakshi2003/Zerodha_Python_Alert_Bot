@@ -158,9 +158,8 @@ class TestStreamResponsiveness:
 
             loop_thread = threading.current_thread().name
             assert threads_seen, "the stream never read from its client"
-            assert loop_thread not in threads_seen, (
-                "SSEClient.get blocked the event loop (the pre-F17 behaviour)"
-            )
+            message = "SSEClient.get blocked the event loop (the pre-F17 behaviour)"
+            assert loop_thread not in threads_seen, message
 
         asyncio.run(scenario())
 
@@ -226,9 +225,8 @@ class TestStreamDisconnect:
             assert task.done()
             assert len(unregistered) == 1, "the stream generator's finally must run"
             assert feed._sse_clients == []
-            assert feed.admit_sse_client(SSEClient("NSE:TEST")) is True, (
-                "the disconnecting client must free its slot"
-            )
+            message = "the disconnecting client must free its slot"
+            assert feed.admit_sse_client(SSEClient("NSE:TEST")) is True, message
 
         asyncio.run(scenario())
 
@@ -253,8 +251,7 @@ class TestNoThreadLeak:
                 await asyncio.wait_for(task, 5)
             after_second_batch = threading.active_count()
 
-            assert after_second_batch <= after_first_batch, (
-                "every stream leaked threads (executor workers must be reused)"
-            )
+            message = "every stream leaked threads (executor workers must be reused)"
+            assert after_second_batch <= after_first_batch, message
 
         asyncio.run(scenario())
