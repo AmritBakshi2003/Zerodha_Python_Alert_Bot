@@ -226,15 +226,18 @@ class ChartService:
             "nse_delayed": "Unofficial delayed NSE data. Not live.",
             "crypto_showcase": "Crypto showcase is not NSE data.",
             "demo": "A made-up day for practice. Nothing is saved.",
-            "kite_live": "Live Kite feed arrives in a later update (C4).",
         }.get(source.id, "")
+        if source.id == "kite_live":
+            # The source owns the wording so it can never drift from the feed.
+            notice = str(getattr(source, "notice", "") or notice)
+        enabled = source.enabled
         return SourceInfo(
             id=source.id,
             label=source.label,
             badge=source.badge,
-            available=source.enabled,
-            enabled=source.enabled,
-            reason="" if source.enabled else notice,
+            available=enabled,
+            enabled=enabled,
+            reason="" if enabled else notice,
             notice=notice,
             supports_oi=source.supports_oi,
         )
@@ -335,9 +338,13 @@ class ChartService:
     ) -> dict[str, Any]:
         source = self.source(source_id)
         if not source.enabled:
+            disabled = self.source_info(source.id)
+            reason = disabled.reason or disabled.notice
+            detail = f"{disabled.label} is not available right now."
+            if reason:
+                detail = f"{detail} {reason}"
             raise ChartError(
-                "Live Kite feed arrives in a later update (C4). Choose Delayed NSE, "
-                "Crypto showcase or Demo replay.",
+                f"{detail} Choose Delayed NSE, Crypto showcase or Demo replay.",
                 status=422,
                 code="source_disabled",
             )

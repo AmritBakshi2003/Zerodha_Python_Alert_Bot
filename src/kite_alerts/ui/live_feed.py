@@ -37,6 +37,7 @@ import contextlib
 import datetime as dt
 import logging
 import queue
+import random
 import threading
 import time
 from collections.abc import Callable
@@ -58,6 +59,7 @@ MAX_SUBSCRIPTIONS = 25  # well inside Kite's 3 000 limit
 _TICK_THROTTLE_PER_SYMBOL = 0.25  # seconds between SSE pushes (max 4/s)
 _HEARTBEAT_INTERVAL = 15.0  # seconds
 _MAX_SSE_QUEUE = 500  # drop-oldest; prevents a slow browser tab growing memory
+_MAX_SSE_CLIENTS = 50  # concurrent chart streams per process
 _BACKOFF_BASE = 1.0
 _BACKOFF_CAP = 60.0
 _STALE_THRESHOLD = 30.0  # seconds since last tick before badge → stale
@@ -101,6 +103,51 @@ class FeedStatus:
             "latency_ms": (round(self.latency_ms, 1) if self.latency_ms is not None else None),
             "reason": self.reason,
         }
+
+
+@dataclass(frozen=True)
+class FeedAvailability:
+    """The single answer to "can this source be used, and how must it be labelled?".
+
+    Every surface (``/api/data-sources``, ``/api/chart/*``, the JS picker) reads
+    this instead of re-deriving availability from the plan probe or the feed state.
+    """
+
+    state: str
+    available: bool
+    enabled: bool
+    badge: str
+    notice: str
+    reason: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "available": self.available,
+            "enabled": self.enabled,
+            "badge": self.badge,
+            "notice": self.notice,
+            "reason": self.reason,
+        }
+
+
+#: Plain-language text per state. One table, so no surface can invent its own.
+_AVAILABILITY_TEXT: dict[str, str] = {
+    STATE_DISCONNECTED: "Live updates start once you connect to Zerodha.",
+    STATE_CONNECTING: "Connecting to the Kite live ticker...",
+    STATE_LIVE: "Streaming live ticks from Kite.",
+    STATE_STALE: "Connected, but no tick has arrived recently.",
+    STATE_MARKET_CLOSED: "Market is closed. Live ticks resume at 09:15 IST.",
+    STATE_TOKEN_EXPIRED: "Your Kite session expired. Reconnect to use live data.",
+    STATE_NO_PLAN: "Your Kite plan has no market data. Delayed NSE is used instead.",
+    STATE_SIMULATED: "SIMULATED, not real market data",
+}
+
+
+def _backoff_delay(attempt: int, rng: random.Random) -> float:
+    """Exponential backoff with jitter, capped: 1s, 2s, 4s ... 60s (+/- 25%)."""
+    base = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** max(0, attempt - 1)))
+    return float(base + rng.uniform(0.0, base * 0.25))
 
 
 @dataclass(frozen=True)
@@ -364,8 +411,18 @@ class LiveFeedService:
     _last_tick_time: float = field(default=0.0, init=False)  # time.time()
     _last_tick_exchange_ts: float = field(default=0.0, init=False)
     _last_tick_latency_ms: float | None = field(default=None, init=False)
-    _subscribed_tokens: set[int] = field(default_factory=set, init=False)
-    _futures_tokens: set[int] = field(default_factory=set, init=False)  # need FULL mode
+    #: Tokens the exchange has actually accepted (what the UI may claim).
+    _active_quote: set[int] = field(default_factory=set, init=False)
+    _active_full: set[int] = field(default_factory=set, init=False)
+    #: Tokens waiting for the socket to open; flushed inside on_connect only.
+    _pending_quote: set[int] = field(default_factory=set, init=False)
+    _pending_full: set[int] = field(default_factory=set, init=False)
+    #: Bumped on every (re)connect; late frames from an older socket are ignored.
+    _generation: int = field(default=0, init=False)
+    _credentials: tuple[str, str] | None = field(default=None, init=False)
+    _reconnect_attempt: int = field(default=0, init=False)
+    _reconnect_timer: threading.Timer | None = field(default=None, init=False)
+    _rng: random.Random = field(default_factory=random.Random, init=False)
     _registry: TokenRegistry = field(default_factory=TokenRegistry, init=False)
     _builder: CandleBuilder = field(default_factory=CandleBuilder, init=False)
     _sse_clients: list[SSEClient] = field(default_factory=list, init=False)
@@ -378,33 +435,60 @@ class LiveFeedService:
 
     # --------------------------------------------------------------------- public
     def start(self, *, api_key: str, access_token: str) -> None:
-        """Start (or reconnect) the ticker thread.
+        """Start (or restart after a pause) the ticker.
 
-        Safe to call multiple times; subsequent calls while running are no-ops.
+        Safe to call repeatedly: a call while connecting or live is a no-op.
+        Subscriptions made before the socket exists are kept queued and are
+        flushed inside ``on_connect`` (see ``_flush_subscriptions``).
         """
         with self._lock:
+            if self._stopped:
+                # Terminal: a stopped service must not silently half-start.
+                log.warning("live feed: stopped for good; create a new instance")
+                return
             if self._state in (STATE_CONNECTING, STATE_LIVE):
                 return
-            if self._stopped:
-                # Once the thread is dead we cannot restart in the same process
-                # (Twisted reactor limitation).  Callers must handle this.
-                log.warning("live feed: cannot restart after stop(); create a new instance")
-                return
+            self._credentials = (api_key, access_token)
+            self._generation += 1
+            generation = self._generation
             self._state = STATE_CONNECTING
             self._reason = ""
 
-        self._start_ticker(api_key=api_key, access_token=access_token)
+        self._start_ticker(api_key=api_key, access_token=access_token, generation=generation)
 
-    def stop(self) -> None:
-        """Shut down the websocket and all SSE clients cleanly."""
+    def pause(self, *, reason: str = "Paused.") -> None:
+        """Close the socket but keep the service usable by a later ``start()``.
+
+        The Twisted reactor keeps running (KiteTicker cannot restart it), so a
+        later ``start()`` simply creates a new ticker on the same reactor. The
+        generation bump makes any late callback from the old socket a no-op.
+        """
         with self._lock:
-            self._stopped = True
-            self._state = STATE_DISCONNECTED
+            if self._stopped:
+                return
+        self._close_socket(reason)
 
-        ticker = self._ticker
+    def _close_socket(self, reason: str) -> None:
+        with self._lock:
+            self._generation += 1
+            ticker, self._ticker = self._ticker, None
+            self._pending_quote |= self._active_quote
+            self._pending_full |= self._active_full
+            self._active_quote.clear()
+            self._active_full.clear()
+            self._state = STATE_DISCONNECTED
+            self._reason = reason
+            self._cancel_reconnect()
         if ticker is not None:
             with contextlib.suppress(Exception):
                 ticker.close()
+        self._broadcast(SSEEvent(event="status", data=self.status().as_dict()))
+
+    def stop(self) -> None:
+        """Terminal shutdown: close the websocket and every SSE client."""
+        with self._lock:
+            self._stopped = True
+        self._close_socket("Stopped.")
 
         with self._sse_lock:
             for client in list(self._sse_clients):
@@ -417,44 +501,36 @@ class LiveFeedService:
         self,
         symbols: list[tuple[str, int, bool]],
     ) -> None:
-        """Subscribe to a list of (symbol, token, is_futures) tuples.
+        """Queue a subscription list of ``(symbol, token, is_futures)``.
 
-        Clips to ``max_subscriptions``.  Uses QUOTE mode by default; switches
-        to FULL for futures/options (OI).
+        Nothing is sent to the exchange here: ``kiteconnect`` closes the socket
+        and raises if ``subscribe()`` is called before ``on_connect``. Tokens are
+        flushed once the socket is open, and only *flushed* tokens are counted
+        in ``status().subscribed``.
         """
         with self._lock:
-            tokens_quote: list[int] = []
-            tokens_full: list[int] = []
             for symbol, token, is_fut in symbols[: self.max_subscriptions]:
                 self._registry.register(symbol, token)
-                if token not in self._subscribed_tokens:
-                    self._subscribed_tokens.add(token)
-                    if is_fut:
-                        self._futures_tokens.add(token)
-                        tokens_full.append(token)
-                    else:
-                        tokens_quote.append(token)
-
-        ticker = self._ticker
-        if ticker is None:
-            return
-        try:
-            all_new = tokens_quote + tokens_full
-            if all_new:
-                ticker.subscribe(all_new)
-            if tokens_quote:
-                ticker.set_mode("quote", tokens_quote)
-            if tokens_full:
-                ticker.set_mode("full", tokens_full)
-        except Exception as exc:
-            log.warning("live feed: subscribe failed (%s)", type(exc).__name__)
+                if is_fut:
+                    self._pending_full.add(token)
+                else:
+                    self._pending_quote.add(token)
+            connected = self._ticker is not None and self._state in (
+                STATE_LIVE,
+                STATE_STALE,
+                STATE_SIMULATED,
+            )
+        if connected:
+            self._flush_subscriptions()
 
     def unsubscribe(self, tokens: list[int]) -> None:
         ticker = self._ticker
         with self._lock:
             for token in tokens:
-                self._subscribed_tokens.discard(token)
-                self._futures_tokens.discard(token)
+                self._active_quote.discard(token)
+                self._active_full.discard(token)
+                self._pending_quote.discard(token)
+                self._pending_full.discard(token)
         if ticker is not None:
             with contextlib.suppress(Exception):
                 ticker.unsubscribe(tokens)
@@ -468,7 +544,7 @@ class LiveFeedService:
             reconnect_count = self._reconnect_count
             last_tick = self._last_tick_time
             latency_ms = self._last_tick_latency_ms
-            subscribed = len(self._subscribed_tokens)
+            subscribed = len(self._active_quote) + len(self._active_full)
 
         if self.is_simulated and state not in (
             STATE_TOKEN_EXPIRED,
@@ -507,6 +583,53 @@ class LiveFeedService:
     def unregister_sse_client(self, client: SSEClient) -> None:
         with self._sse_lock, contextlib.suppress(ValueError):
             self._sse_clients.remove(client)
+
+    def admit_sse_client(self, client: SSEClient) -> bool:
+        """Register an SSE client only when there is room.
+
+        The length check and the append happen under one lock, so two streams
+        opening at the same time cannot both pass a stale ``len()`` check.
+        """
+        with self._sse_lock:
+            if self._stopped or len(self._sse_clients) >= _MAX_SSE_CLIENTS:
+                return False
+            self._sse_clients.append(client)
+            return True
+
+    def availability(self) -> FeedAvailability:
+        """The single answer to "can Kite live be used, and what do we say?".
+
+        ``/api/data-sources``, ``/api/chart/*`` and the JS picker all read this,
+        so the badge, the enabled flag and the sentence can never disagree.
+        """
+        status = self.status()
+        state = status.state
+        with self._lock:
+            has_credentials = self._credentials is not None
+        enabled = state in (
+            STATE_CONNECTING,
+            STATE_LIVE,
+            STATE_STALE,
+            STATE_MARKET_CLOSED,
+            STATE_SIMULATED,
+        ) or (has_credentials and state == STATE_DISCONNECTED)
+        notice = _AVAILABILITY_TEXT.get(state, _AVAILABILITY_TEXT[STATE_DISCONNECTED])
+        if state == STATE_STALE and status.reason:
+            notice = f"Live ticks paused: {status.reason}."
+        if state == STATE_SIMULATED:
+            badge = "SIMULATED"
+        elif state in (STATE_LIVE, STATE_STALE, STATE_MARKET_CLOSED, STATE_CONNECTING):
+            badge = "LIVE"
+        else:
+            badge = "OFF"
+        return FeedAvailability(
+            state=state,
+            available=enabled,
+            enabled=enabled,
+            badge=badge,
+            notice=notice,
+            reason=status.reason,
+        )
 
     def set_token_expired(self) -> None:
         """Called when the ticker reports an auth failure mid-session."""
@@ -563,14 +686,15 @@ class LiveFeedService:
             log.warning("live feed: cannot create kite client (%s)", type(exc).__name__)
             return None
 
-    def _start_ticker(self, *, api_key: str, access_token: str) -> None:
+    def _start_ticker(self, *, api_key: str, access_token: str, generation: int) -> None:
         try:
             ticker = self.ticker_factory(api_key, access_token)
         except Exception as exc:
             log.warning("live feed: could not create ticker (%s)", type(exc).__name__)
             with self._lock:
-                self._state = STATE_DISCONNECTED
-                self._reason = "Could not create the ticker."
+                if generation == self._generation:
+                    self._state = STATE_DISCONNECTED
+                    self._reason = "Could not create the ticker."
             return
 
         ticker.on_ticks = self._on_ticks
@@ -579,41 +703,114 @@ class LiveFeedService:
         ticker.on_error = self._on_error
         ticker.on_reconnect = self._on_reconnect
         ticker.on_noreconnect = self._on_noreconnect
-        self._ticker = ticker
-
-        # Re-subscribe tokens that were requested before the ticker started
+        # Callbacks from a socket replaced by pause()/start() become no-ops.
+        ticker._feed_generation = generation
         with self._lock:
-            tokens_quote = [t for t in self._subscribed_tokens if t not in self._futures_tokens]
-            tokens_full = list(self._futures_tokens)
+            if generation != self._generation:
+                return
+            self._ticker = ticker
 
         def _connect() -> None:
+            # Never subscribe here: the socket is not open yet and kiteconnect
+            # raises (and closes itself) for subscribe-before-connect.
             try:
                 ticker.connect(threaded=True)
-                if tokens_quote:
-                    ticker.subscribe(tokens_quote)
-                    ticker.set_mode("quote", tokens_quote)
-                if tokens_full:
-                    ticker.subscribe(tokens_full)
-                    ticker.set_mode("full", tokens_full)
             except Exception as exc:
                 log.warning("live feed: connect failed (%s)", type(exc).__name__)
                 with self._lock:
+                    if generation != self._generation:
+                        return
                     self._state = STATE_DISCONNECTED
-                    self._reason = "Connection failed."
+                    self._reason = "Connection failed. Retrying."
+                self._schedule_reconnect(generation)
 
         t = threading.Thread(target=_connect, name="kite-ticker-connect", daemon=True)
         t.start()
         self._thread = t
 
+    def _flush_subscriptions(self) -> bool:
+        """Send queued tokens on an open socket; count only what was accepted."""
+        with self._lock:
+            ticker = self._ticker
+            if ticker is None:
+                return False
+            quote = sorted(self._pending_quote)
+            full = sorted(self._pending_full)
+            self._pending_quote.clear()
+            self._pending_full.clear()
+        if not quote and not full:
+            return True
+        try:
+            if quote:
+                ticker.subscribe(quote)
+                ticker.set_mode("quote", quote)
+            if full:
+                ticker.subscribe(full)
+                ticker.set_mode("full", full)
+        except Exception as exc:
+            log.warning("live feed: subscribe failed (%s)", type(exc).__name__)
+            with self._lock:
+                self._pending_quote.update(quote)
+                self._pending_full.update(full)
+                self._state = STATE_DISCONNECTED
+                self._reason = "Kite did not accept the subscription."
+            return False
+        with self._lock:
+            self._active_quote.update(quote)
+            self._active_full.update(full)
+        return True
+
+    def _generation_matches(self, ws: Any) -> bool:
+        """False for a callback coming from a socket we have already replaced."""
+        generation = getattr(ws, "_feed_generation", None)
+        if generation is None:
+            return True
+        return bool(generation == self._generation)
+
+    def _cancel_reconnect(self) -> None:
+        timer, self._reconnect_timer = self._reconnect_timer, None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_reconnect(self, generation: int) -> None:
+        """Our own retry ladder, used once the SDK has given up."""
+        with self._lock:
+            if self._stopped or generation != self._generation or self._credentials is None:
+                return
+            self._reconnect_attempt += 1
+            delay = _backoff_delay(self._reconnect_attempt, self._rng)
+            timer = threading.Timer(delay, self._retry_reconnect, args=(generation,))
+            timer.daemon = True
+            self._reconnect_timer = timer
+        timer.start()
+
+    def _retry_reconnect(self, generation: int) -> None:
+        with self._lock:
+            if self._stopped or generation != self._generation:
+                return
+            credentials = self._credentials
+            self._reconnect_timer = None
+        if credentials is None:
+            return
+        self.start(api_key=credentials[0], access_token=credentials[1])
+
     # ---------------------------------------------------------------- callbacks
     def _on_connect(self, ws: Any, response: Any) -> None:
+        if not self._generation_matches(ws):
+            return
         log.info("live feed: connected")
         with self._lock:
             self._state = STATE_LIVE
             self._reason = ""
+            self._reconnect_attempt = 0
+            self._cancel_reconnect()
+        # The socket is open now, so it is finally safe to subscribe.
+        self._flush_subscriptions()
         self._broadcast(SSEEvent(event="status", data=self.status().as_dict()))
 
     def _on_ticks(self, ws: Any, ticks: list[dict[str, Any]]) -> None:
+        if not self._generation_matches(ws):
+            return
         received_at = time.time()
         for raw in ticks:
             self._process_raw_tick(raw, received_at)
@@ -668,8 +865,9 @@ class LiveFeedService:
                 self._state = STATE_LIVE
                 self._reason = ""
 
-        # Feed the candle builder
-        ist_ts = pd.Timestamp(received_at, unit="s", tz="UTC").tz_convert(IST)
+        # Candle time is the exchange timestamp: the wall clock is the source of
+        # the "forming candle in the future" bug (late processing crossed minutes).
+        ist_ts = pd.Timestamp(tick.exchange_ts, unit="s", tz="UTC").tz_convert(IST)
         closed = self._builder.on_tick(
             tick.symbol,
             ist_ts,
@@ -701,20 +899,15 @@ class LiveFeedService:
             self._broadcast_to_symbol(tick_event, tick.symbol)
 
             # Also broadcast the in-progress (forming) candle
-            self._broadcast_forming(tick.symbol)
+            self._broadcast_forming(tick.symbol, ist_ts)
 
         # Broadcast any newly closed candles
         for candle in closed:
             self._broadcast_closed_candle(candle, tick.symbol, tick.is_simulated)
 
-    def _broadcast_forming(self, symbol: str) -> None:
-        """Push the current in-progress candle to subscribed SSE clients."""
-        in_progress = self._builder.in_progress()
-        minute = in_progress.get(symbol)
-        if minute is None:
-            return
-        # We use the _open dict indirectly via pending()
-        pending = self._builder.pending(pd.Timestamp.now(tz=IST) + pd.Timedelta(minutes=1))
+    def _broadcast_forming(self, symbol: str, ts: pd.Timestamp) -> None:
+        """Push the pending candle for the tick's minute to subscribed clients."""
+        pending = self._builder.pending(ts + pd.Timedelta(minutes=1))
         for candle in pending:
             if candle.symbol == symbol:
                 self._broadcast_to_symbol(
@@ -751,15 +944,24 @@ class LiveFeedService:
                     client.push(event)
 
     def _on_close(self, ws: Any, code: int, reason: str) -> None:
+        if not self._generation_matches(ws):
+            return
         with self._lock:
             if self._state == STATE_TOKEN_EXPIRED:
                 return  # token_expired already set; do not overwrite
             self._state = STATE_DISCONNECTED
-            self._reason = f"Disconnected (code {code})"
+            self._reason = f"Disconnected (code {code}); reconnecting"
+            # A reconnect opens a fresh socket with no subscriptions: re-queue.
+            self._pending_quote |= self._active_quote
+            self._pending_full |= self._active_full
+            self._active_quote.clear()
+            self._active_full.clear()
         log.info("live feed: closed code=%s reason=%s", code, reason)
         self._broadcast(SSEEvent(event="status", data=self.status().as_dict()))
 
     def _on_error(self, ws: Any, code: int, reason: str) -> None:
+        if not self._generation_matches(ws):
+            return
         log.warning("live feed: error code=%s reason=%s", code, reason)
         # Auth errors
         if code in (403, 401) or "token" in str(reason).lower():
@@ -778,11 +980,15 @@ class LiveFeedService:
         self._broadcast(SSEEvent(event="status", data=self.status().as_dict()))
 
     def _on_noreconnect(self, ws: Any) -> None:
+        if not self._generation_matches(ws):
+            return
         with self._lock:
             self._state = STATE_DISCONNECTED
-            self._reason = "Reconnect limit reached."
-        log.warning("live feed: no reconnect; market may be closed")
+            self._reason = "Reconnect limit reached. Retrying with backoff."
+            generation = self._generation
+        log.warning("live feed: SDK gave up reconnecting; scheduling our own retry")
         self._broadcast(SSEEvent(event="status", data=self.status().as_dict()))
+        self._schedule_reconnect(generation)
 
     def _market_is_open(self) -> bool:
         if self.calendar is None:
@@ -851,6 +1057,7 @@ __all__ = [
     "STATE_SIMULATED",
     "STATE_STALE",
     "STATE_TOKEN_EXPIRED",
+    "FeedAvailability",
     "FeedStatus",
     "LiveFeedService",
     "LiveTick",

@@ -165,6 +165,10 @@ class FakeTicker:
     MODE_FULL = "full"
 
     instances: ClassVar[list[FakeTicker]] = []
+    #: When True the fake behaves like ``kiteconnect``: ``connect()`` returns
+    #: before the socket is open, and ``subscribe()`` before ``on_connect``
+    #: raises. Set by tests that exercise the real connect/subscribe ordering.
+    strict_socket: ClassVar[bool] = False
 
     def __init__(self, api_key: str, access_token: str, **kwargs: Any) -> None:
         self.api_key = api_key
@@ -187,16 +191,30 @@ class FakeTicker:
     # ------------------------------------------------------------------ SDK surface
     def connect(self, threaded: bool = False, **_: Any) -> None:
         self.connect_args = (threaded,)
-        self.connected = True
         self.stopped = False
         self.closed = False
+        if FakeTicker.strict_socket:
+            # Handshake is still in flight: on_connect fires from open_socket().
+            return
+        self.open_socket()
+
+    def open_socket(self) -> None:
+        """Complete the handshake and fire ``on_connect`` (strict mode)."""
+        self.connected = True
         if self.on_connect is not None:
             self.on_connect(self, {"type": "connect"})
 
     def subscribe(self, tokens: Sequence[int]) -> None:
+        if FakeTicker.strict_socket and not self.connected:
+            # kiteconnect closes the socket and raises, which is the bug that
+            # a subscribe-before-connect call caused in production.
+            self.closed = True
+            raise RuntimeError("WebSocket is not connected")
         self.subscribed.extend(int(token) for token in tokens)
 
     def set_mode(self, mode: str, tokens: Sequence[int]) -> None:
+        if FakeTicker.strict_socket and not self.connected:
+            raise RuntimeError("WebSocket is not connected")
         self.modes.append((mode, [int(token) for token in tokens]))
 
     def stop(self) -> None:
@@ -225,6 +243,7 @@ class FakeTicker:
     @classmethod
     def reset(cls) -> None:
         cls.instances.clear()
+        cls.strict_socket = False
 
 
 @dataclass

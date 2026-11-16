@@ -175,7 +175,8 @@ class TestDemoAndKite:
         assert source.enabled is False
         with pytest.raises(SourceError) as caught:
             source.fetch("NSE:TEST", 1, None)
-        assert "later update" in caught.value.message
+        assert "not available" in caught.value.message.lower()
+        assert "later update" not in caught.value.message.lower()
 
     def test_kite_live_source_enabled_and_badge_properties(self) -> None:
         source = KiteLiveSource()

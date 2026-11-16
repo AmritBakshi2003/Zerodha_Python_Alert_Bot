@@ -48,7 +48,7 @@ class TestChartPage:
         assert "kite_live" in chart
         assert "enabled: false" in chart
         assert "option.disabled = source.enabled === false" in chart
-        assert "later update" in chart
+        assert "later update" not in chart.lower()
         assert "SOURCE_ORDER" in chart
         assert "nse_delayed: 0, crypto_showcase: 1, demo: 2, kite_live: 3" in chart
 

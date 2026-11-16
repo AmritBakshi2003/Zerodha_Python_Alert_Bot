@@ -94,7 +94,9 @@ class TestEndpoints:
                 params={"source": "kite_live", "symbol": "NSE:TEST"},
             )
         assert response.status_code == 422
-        assert "later update" in response.json()["message"]
+        message = response.json()["message"]
+        assert "later update" not in message.lower()
+        assert "not available" in message.lower()
         assert fake.calls == []
 
     def test_stale_data_is_200_with_a_visible_mark(self, tmp_path: Path) -> None:
@@ -170,7 +172,9 @@ class TestDataSourcesAndIsolation:
         assert sources["crypto_showcase"]["badge"] == "SHOWCASE"
         assert sources["demo"]["badge"] == "DEMO"
         assert sources["kite_live"]["enabled"] is False
-        assert "later update" in sources["kite_live"]["notice"]
+        notice = sources["kite_live"]["notice"]
+        assert notice
+        assert "later update" not in notice.lower()
         assert sources["nse_delayed"]["supports_oi"] is False
 
     def test_chart_calls_never_send_alerts_or_write_history(self, tmp_path: Path) -> None:

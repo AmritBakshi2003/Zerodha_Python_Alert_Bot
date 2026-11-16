@@ -440,12 +440,7 @@ class KiteConnectService:
                     badge="LIVE",
                     enabled=False,
                     notice=(
-                        "Live Kite feed arrives in a later update (C4)."
-                        if feed is None
-                        else (
-                            "Connect to your Zerodha account with a market data "
-                            "plan to use live data."
-                        )
+                        "Connect to your Zerodha account with a market data plan to use live data."
                     ),
                     supports_oi=True,
                 )
@@ -453,24 +448,25 @@ class KiteConnectService:
                 assert settings is not None
                 available, reason = self._probe_live(settings, token)
                 if feed is None:
-                    notice = "Live Kite feed arrives in a later update (C4)."
+                    notice = (
+                        "Live Kite data is not available here. The delayed NSE source works now."
+                    )
                     enabled = False
                 else:
-                    feed_status = feed.status()
-                    enabled = available
-                    if available:
-                        notice = "Live data available from your Kite account."
-                        if feed_status and feed_status.state == "live":
-                            notice = "Streaming live ticks from Kite."
-                        elif feed_status and feed_status.state == "connecting":
-                            notice = "Connecting to Kite live ticker..."
-                        elif feed_status and feed_status.state == "stale":
-                            notice = feed_status.reason or "Live feed is stale."
+                    # The feed owns enabled + wording, so this payload cannot
+                    # disagree with the chart or the picker (F5).
+                    availability = getattr(feed, "availability", None)
+                    if availability is not None:
+                        view = availability()
+                        enabled = bool(view.enabled)
+                        notice = view.notice
                     else:
+                        enabled = available
                         notice = (
-                            f"{reason} Live Kite feed arrives in a later update (C4) "
-                            "if not connected."
+                            "Live data available from your Kite account." if available else reason
                         )
+                    if not enabled and not notice:
+                        notice = reason
                 live = DataSource(
                     "kite_live",
                     "Kite live",
