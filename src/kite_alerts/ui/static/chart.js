@@ -23,7 +23,7 @@ const FALLBACK_SOURCES = [
   { id: "nse_delayed", label: "Delayed NSE", badge: "DELAYED", enabled: true, notice: "Unofficial delayed data. Not live." },
   { id: "crypto_showcase", label: "Crypto showcase", badge: "SHOWCASE", enabled: true, notice: "Crypto showcase is not NSE data." },
   { id: "demo", label: "Demo replay", badge: "DEMO", enabled: true, notice: "A made-up day for practice." },
-  { id: "kite_live", label: "Kite live", badge: "LIVE", enabled: false, reason: "Live Kite feed arrives in a later update (C4).", notice: "Live Kite feed arrives in a later update (C4)." },
+  { id: "kite_live", label: "Kite live", badge: "LIVE", enabled: false, reason: "Connect to Zerodha to use live Kite market data.", notice: "Connect to Zerodha to use live Kite market data." },
 ];
 const BADGE_MESSAGES = {
   DELAYED: "DELAYED — unofficial, delayed data",
@@ -361,8 +361,9 @@ async function loadSources() {
     return (SOURCE_ORDER[left.id] || 0) - (SOURCE_ORDER[right.id] || 0);
   });
   state.sources.forEach(function (source) {
+    // The server is the only judge of availability; never hard-code it here.
     if (typeof source.enabled !== "boolean") {
-      source.enabled = source.id !== "kite_live";
+      source.enabled = true;
     }
   });
   renderSourceOptions();

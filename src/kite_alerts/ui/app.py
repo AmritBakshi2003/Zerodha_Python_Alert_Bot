@@ -161,6 +161,8 @@ class UiContext:
     simulator: Any = None
     simulate_kite: bool = False
     ticker_factory: Any = None
+    resolver_factory: Any = None
+    feed_controller: Any = None
 
     def __post_init__(self) -> None:
         if self.settings_store is None:
@@ -223,6 +225,15 @@ class UiContext:
             self.simulator = KiteSimulator(self.feed)
             self.simulator.start()
 
+        if self.feed_controller is None and self.feed is not None:
+            from .feed_controller import FeedController, default_resolver_factory
+
+            self.feed_controller = FeedController(
+                self.feed,
+                lambda: self.settings,
+                resolver_factory=self.resolver_factory or default_resolver_factory,
+            )
+
     # ------------------------------------------------------------------ lifecycle
     def reload(self) -> None:
         """Re-read .env after a save or a successful login."""
@@ -241,6 +252,10 @@ class UiContext:
         self.status.update_settings(settings)
         self.test_alerts.settings = settings
         self.test_alerts.settings_error = error
+        # A saved key or a fresh token means the feed must (re)connect.
+        if self.feed_controller is not None:
+            self.feed_controller.reset()
+            self.feed_controller.ensure_started()
 
     def session_status(self) -> dict[str, Any]:
         assert self.kite is not None
@@ -349,6 +364,9 @@ def create_app(context: UiContext) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # F1: nothing used to start the feed, so ``live`` was advertised but dead.
+        if context.feed_controller is not None:
+            context.feed_controller.ensure_started()
         yield
         if context.simulator is not None:
             context.simulator.stop()
@@ -617,6 +635,13 @@ def create_app(context: UiContext) -> FastAPI:
     def chart_failure(exc: ChartError) -> JSONResponse:
         return _error(exc.status, exc.message, exc.code)
 
+    def _ensure_feed_for(source: str, symbol: str) -> None:
+        """Selecting a live symbol is what starts/extends the ticker (F1)."""
+        if source != "kite_live" or context.feed_controller is None:
+            return
+        spec = symbol.strip()
+        context.feed_controller.ensure_started([spec] if spec else None)
+
     @app.get("/api/chart/symbols")
     def chart_symbols(
         source: Annotated[str, Query(max_length=32)] = "nse_delayed",
@@ -640,6 +665,7 @@ def create_app(context: UiContext) -> FastAPI:
     ) -> JSONResponse:
         chart_guard()
         assert context.chart is not None
+        _ensure_feed_for(source, symbol)
         try:
             return JSONResponse(
                 context.chart.candles(
@@ -660,6 +686,7 @@ def create_app(context: UiContext) -> FastAPI:
     ) -> JSONResponse:
         chart_guard()
         assert context.chart is not None
+        _ensure_feed_for(source, symbol)
         try:
             return JSONResponse(context.chart.live(source, symbol, interval=interval))
         except ChartError as exc:
@@ -717,16 +744,18 @@ def create_app(context: UiContext) -> FastAPI:
             )
         if context.feed is None:
             raise HTTPException(status_code=503, detail="Live feed service is not available.")
-        if len(context.feed._sse_clients) >= 50:
-            raise HTTPException(
-                status_code=429,
-                detail="Too many concurrent stream connections. Try again later.",
-            )
+        _ensure_feed_for(source, symbol)
 
         from .live_feed import SSEClient
 
         client = SSEClient(symbol=symbol, interval=interval)
-        context.feed.register_sse_client(client)
+        # Cap check and registration happen under one lock: two tabs opening
+        # together can no longer both pass a stale len() check.
+        if not context.feed.admit_sse_client(client):
+            raise HTTPException(
+                status_code=429,
+                detail="Too many concurrent stream connections. Try again later.",
+            )
 
         async def event_generator() -> AsyncIterator[str]:
             import asyncio
@@ -738,14 +767,17 @@ def create_app(context: UiContext) -> FastAPI:
 
                 last_heartbeat = time.monotonic()
                 while not await request.is_disconnected():
-                    event = client.get(timeout=0.5)
-                    if event is not None:
+                    # client.get() blocks; run it in a worker thread so the
+                    # event loop keeps serving every other request (F17).
+                    event = await asyncio.to_thread(client.get, 0.5)
+                    while event is not None:
                         yield f"event: {event.event}\ndata: {json.dumps(event.data)}\n\n"
+                        event = client.get(timeout=0)
                     now = time.monotonic()
                     if now - last_heartbeat >= 15.0:
                         last_heartbeat = now
                         yield ": heartbeat\n\n"
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(0)
             finally:
                 context.feed.unregister_sse_client(client)
                 client.close()

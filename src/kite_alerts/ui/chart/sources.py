@@ -327,15 +327,15 @@ class KiteLiveSource:
         if self._enabled is not None:
             return self._enabled
         try:
-            from ..live_feed import (
-                STATE_DISCONNECTED,
-                STATE_NO_PLAN,
-                STATE_TOKEN_EXPIRED,
-            )
+            from ..live_feed import STATE_DISCONNECTED, STATE_NO_PLAN, STATE_TOKEN_EXPIRED
 
             feed = self.feed_provider() if self.feed_provider else None
             if feed is None:
                 return False
+            availability = getattr(feed, "availability", None)
+            if availability is not None:
+                # One answer for every surface (F5).
+                return bool(availability().enabled)
             st = feed.status().state
             return st not in (STATE_DISCONNECTED, STATE_NO_PLAN, STATE_TOKEN_EXPIRED)
         except Exception:
@@ -344,6 +344,20 @@ class KiteLiveSource:
     @enabled.setter
     def enabled(self, value: bool) -> None:
         self._enabled = value
+
+    @property
+    def notice(self) -> str:
+        """The sentence every surface shows for this source, or an empty string."""
+        try:
+            feed = self.feed_provider() if self.feed_provider else None
+            if feed is None:
+                return "Connect to Zerodha to use live Kite market data."
+            availability = getattr(feed, "availability", None)
+            if availability is not None:
+                return str(availability().notice)
+        except Exception:
+            return ""
+        return ""
 
     @property
     def badge(self) -> str:
@@ -385,11 +399,16 @@ class KiteLiveSource:
     def fetch(self, symbol: str, interval: int, settings: Settings | None) -> SourceSeries:
         feed = self.feed_provider() if self.feed_provider else None
         if feed is None:
-            msg = "Live Kite feed arrives in a later update (C4). The delayed NSE source works now."
-            raise SourceError(msg, code="coming_soon")
+            raise SourceError(
+                "Live Kite data is not available here. The delayed NSE source works now.",
+                code="feed_unavailable",
+            )
         if not self.enabled:
             reason = "Live Kite feed is not currently connected."
-            if feed is not None:
+            availability = getattr(feed, "availability", None)
+            if availability is not None:
+                reason = availability().notice
+            else:
                 st = feed.status()
                 if st.reason:
                     reason = st.reason

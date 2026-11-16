@@ -88,14 +88,14 @@ class TestLiveFeedServiceLifecycle:
         symbols = [(f"NSE:SYM{i}", 1000 + i, False) for i in range(10)] + [("NFO:FUT1", 2001, True)]
         feed.subscribe(symbols)
 
-        assert 2001 in feed._futures_tokens
-        assert 1000 in feed._subscribed_tokens
-        assert len(feed._subscribed_tokens) == 11
+        assert 2001 in feed._active_full
+        assert 1000 in feed._active_quote
+        assert len(feed._active_quote) + len(feed._active_full) == 11
 
         # Check unsubscribe
         feed.unsubscribe([1000, 2001])
-        assert 1000 not in feed._subscribed_tokens
-        assert 2001 not in feed._futures_tokens
+        assert 1000 not in feed._active_quote
+        assert 2001 not in feed._active_full
         feed.stop()
 
     def test_subscription_cap(self) -> None:
@@ -105,7 +105,7 @@ class TestLiveFeedServiceLifecycle:
 
         symbols = [(f"NSE:SYM{i}", 1000 + i, False) for i in range(10)]
         feed.subscribe(symbols)
-        assert len(feed._subscribed_tokens) <= 5
+        assert len(feed._pending_quote) + len(feed._active_quote) <= 5
         feed.stop()
 
 
