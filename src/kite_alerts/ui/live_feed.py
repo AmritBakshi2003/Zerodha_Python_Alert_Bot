@@ -150,6 +150,24 @@ def _backoff_delay(attempt: int, rng: random.Random) -> float:
     return float(base + rng.uniform(0.0, base * 0.25))
 
 
+#: The badge each state may show. "LIVE" appears here exactly once: a feed with
+#: fresh ticks (N1). Every other state must never let a surface render "LIVE".
+_BADGE_BY_STATE: dict[str, str] = {
+    STATE_DISCONNECTED: "OFF",
+    STATE_CONNECTING: "CONNECTING",
+    STATE_LIVE: "LIVE",
+    STATE_STALE: "STALE",
+    STATE_MARKET_CLOSED: "CLOSED",
+    STATE_TOKEN_EXPIRED: "EXPIRED",
+    STATE_NO_PLAN: "NO PLAN",
+    STATE_SIMULATED: "SIMULATED",
+}
+
+#: Terminal for a *retry with the same credentials*: no ticker rebuild and no
+#: badge change until the user logs in again (or the plan comes back).
+_PROBE_TERMINAL_STATES = (STATE_TOKEN_EXPIRED, STATE_NO_PLAN)
+
+
 @dataclass(frozen=True)
 class LiveTick:
     """A normalised tick delivered to the SSE queue."""
@@ -448,6 +466,15 @@ class LiveFeedService:
                 return
             if self._state in (STATE_CONNECTING, STATE_LIVE):
                 return
+            if self._state in _PROBE_TERMINAL_STATES and self._credentials == (
+                api_key,
+                access_token,
+            ):
+                # N1: retrying with the same dead token (or the same missing
+                # plan) would silently erase the token_expired/no_plan state
+                # and let the surfaces claim "LIVE / Connecting..." again.
+                log.warning("live feed: %s; not restarting with the same credentials", self._state)
+                return
             self._credentials = (api_key, access_token)
             self._generation += 1
             generation = self._generation
@@ -596,6 +623,11 @@ class LiveFeedService:
             self._sse_clients.append(client)
             return True
 
+    def has_credentials(self, api_key: str, access_token: str) -> bool:
+        """True when the feed was last started with exactly these credentials."""
+        with self._lock:
+            return self._credentials == (api_key, access_token)
+
     def availability(self) -> FeedAvailability:
         """The single answer to "can Kite live be used, and what do we say?".
 
@@ -616,17 +648,11 @@ class LiveFeedService:
         notice = _AVAILABILITY_TEXT.get(state, _AVAILABILITY_TEXT[STATE_DISCONNECTED])
         if state == STATE_STALE and status.reason:
             notice = f"Live ticks paused: {status.reason}."
-        if state == STATE_SIMULATED:
-            badge = "SIMULATED"
-        elif state in (STATE_LIVE, STATE_STALE, STATE_MARKET_CLOSED, STATE_CONNECTING):
-            badge = "LIVE"
-        else:
-            badge = "OFF"
         return FeedAvailability(
             state=state,
             available=enabled,
             enabled=enabled,
-            badge=badge,
+            badge=_BADGE_BY_STATE.get(state, "OFF"),
             notice=notice,
             reason=status.reason,
         )
@@ -634,6 +660,8 @@ class LiveFeedService:
     def set_token_expired(self) -> None:
         """Called when the ticker reports an auth failure mid-session."""
         with self._lock:
+            if self._state == STATE_TOKEN_EXPIRED:
+                return  # already announced; do not spam the SSE stream
             self._state = STATE_TOKEN_EXPIRED
             self._reason = "Token expired. Reconnect on the Connect page."
         self._broadcast(
@@ -647,6 +675,35 @@ class LiveFeedService:
             )
         )
         log.warning("live feed: token expired mid-session")
+
+    def set_no_plan(self, reason: str) -> None:
+        """Called when the plan probe finds no market-data entitlement (F5)."""
+        with self._lock:
+            if self._state == STATE_NO_PLAN:
+                return
+            self._state = STATE_NO_PLAN
+            self._reason = reason
+        self._broadcast(
+            SSEEvent(
+                event="status",
+                data={
+                    "state": STATE_NO_PLAN,
+                    "reason": reason,
+                    "fallback": "Switched to Delayed NSE.",
+                },
+            )
+        )
+        log.warning("live feed: no market-data plan")
+
+    def clear_no_plan(self) -> None:
+        """The plan probe succeeded again: allow the feed to start once more."""
+        with self._lock:
+            if self._state != STATE_NO_PLAN:
+                return
+            self._state = STATE_DISCONNECTED
+            self._reason = ""
+        self._broadcast(SSEEvent(event="status", data=self.status().as_dict()))
+        log.info("live feed: market data available again")
 
     def push_simulated_tick(self, tick: LiveTick) -> None:
         """Used by the simulator to inject ticks into the same pipeline."""
@@ -983,6 +1040,8 @@ class LiveFeedService:
         if not self._generation_matches(ws):
             return
         with self._lock:
+            if self._state == STATE_TOKEN_EXPIRED:
+                return  # a dead token must not be retried behind the user's back
             self._state = STATE_DISCONNECTED
             self._reason = "Reconnect limit reached. Retrying with backoff."
             generation = self._generation

@@ -136,7 +136,7 @@ def _strict_fake_socket() -> object:
     FakeTicker.strict_socket = False
 
 
-@pytest.fixture()
+@pytest.fixture
 def harness(tmp_path: Path) -> Harness:
     FakeTicker.reset()
     FakeTicker.strict_socket = True
@@ -166,6 +166,8 @@ def harness(tmp_path: Path) -> Harness:
 
 
 def _make_feed(*, is_simulated: bool = False) -> LiveFeedService:
+    FakeTicker.reset()
+    FakeTicker.strict_socket = True  # reset() clears it
     fake_kite = FakeKite()
     return LiveFeedService(
         ticker_factory=lambda key, token: FakeTicker(key, token),
@@ -310,8 +312,9 @@ class TestAvailabilityBadge:
             feed.start(api_key="k", access_token="t")
             FakeTicker.instances[-1].open_socket()
             feed._last_tick_time = pd.Timestamp.now(tz=IST).timestamp() - 120.0
-            if state == STATE_MARKET_CLOSED:
-                feed._market_is_open = lambda: False  # type: ignore[method-assign]
+            # Injected, never the real calendar: the two states must not
+            # depend on the time of day this test runs at.
+            feed._market_is_open = lambda: state == STATE_STALE  # type: ignore[method-assign]
         elif state == STATE_TOKEN_EXPIRED:
             feed.start(api_key="k", access_token="t")
             feed.set_token_expired()
@@ -358,9 +361,7 @@ class TestAvailabilityBadge:
 
 
 class TestPayloadCarriesFeedState:
-    def test_candles_and_symbols_payloads_carry_the_feed_state(
-        self, harness: Harness
-    ) -> None:
+    def test_candles_and_symbols_payloads_carry_the_feed_state(self, harness: Harness) -> None:
         symbols = harness.client.get("/api/chart/symbols?source=kite_live").json()
         assert symbols["feed_state"] == STATE_CONNECTING
 
@@ -430,9 +431,7 @@ class TestProbeDrivesTheFeedState:
         client = TestClient(create_app(context), base_url=BASE_URL)
         return client, context, monotonic
 
-    def test_a_permission_probe_sets_no_plan_and_success_clears_it(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_permission_probe_sets_no_plan_and_success_clears_it(self, tmp_path: Path) -> None:
         probe = ProbeKite(ltp_error=PermissionException("insufficient permission"))
         client, context, monotonic = self._build_with_probe(tmp_path, probe)
         try:
@@ -483,9 +482,7 @@ class TestProbeDrivesTheFeedState:
 class TestAllSurfacesAgree:
     """F5: data-sources, the chart payload and the picker tell one story."""
 
-    def test_payload_and_picker_agree_through_the_feed_states(
-        self, harness: Harness
-    ) -> None:
+    def test_payload_and_picker_agree_through_the_feed_states(self, harness: Harness) -> None:
         def agree(expected_state: str, *, payload: dict[str, Any] | None = None) -> None:
             live = harness.live_entry()
             assert live["state"] == expected_state
@@ -504,8 +501,10 @@ class TestAllSurfacesAgree:
         _push_tick(harness.ticker)
         agree(STATE_LIVE, payload=harness.candle_payload())
 
-        # Stale: no tick for a while, market still open.
+        # Stale: no tick for a while, market still open (injected: the real
+        # calendar is time-of-day dependent and must not decide this test).
         harness.feed._last_tick_time = pd.Timestamp.now(tz=IST).timestamp() - 120.0
+        harness.feed._market_is_open = lambda: True  # type: ignore[method-assign]
         agree(STATE_STALE, payload=harness.candle_payload())
 
         # Market closed: same staleness, but the session is over.

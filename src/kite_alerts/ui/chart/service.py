@@ -483,6 +483,9 @@ class ChartService:
             "retry_after": round(series.retry_after, 1),
             "message": message,
             "notice": self.source_info(source.id).notice,
+            # The feed state this payload was rendered from, "" for non-feed
+            # sources (N1: the browser can never claim LIVE from stale text).
+            "feed_state": getattr(source, "availability_state", ""),
         }
 
     def live(self, source_id: str, symbol: str, interval: int = 1) -> dict[str, Any]:
@@ -506,6 +509,7 @@ class ChartService:
             "chart_types": list(CHART_TYPES),
             "symbols": [info.as_dict() for info in self._symbols_for(source, settings)],
             "notice": self.source_info(source.id).notice,
+            "feed_state": getattr(source, "availability_state", ""),
         }
 
     def market_clock(self, now: dt.datetime | None = None) -> dict[str, Any]:

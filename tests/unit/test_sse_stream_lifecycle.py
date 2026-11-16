@@ -28,9 +28,8 @@ from fastapi.testclient import TestClient
 
 from fakes.fake_kite import FakeTicker
 from kite_alerts.ui.app import build_context, create_app
-from kite_alerts.ui.live_feed import SSEClient, LiveFeedService
+from kite_alerts.ui.live_feed import LiveFeedService, SSEClient
 from unit.ui_support import BASE_URL
-
 
 MAX_SSE_CLIENTS = 50
 
@@ -78,7 +77,9 @@ def _scope(path: str, query: str) -> dict[str, Any]:
     }
 
 
-async def _start_stream(app: Any, query: str = "source=kite_live&symbol=NSE:TEST&interval=1") -> tuple[FakeSocket, asyncio.Task[None]]:
+async def _start_stream(
+    app: Any, query: str = "source=kite_live&symbol=NSE:TEST&interval=1"
+) -> tuple[FakeSocket, asyncio.Task[None]]:
     socket = FakeSocket()
     await socket.send_request()
     task = asyncio.create_task(app(_scope("/api/chart/stream", query), socket.receive, socket.send))

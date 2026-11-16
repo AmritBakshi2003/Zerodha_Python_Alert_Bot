@@ -30,6 +30,7 @@ from typing import Any
 
 from ..config.settings import Settings
 from ..core.clock import SystemClock, to_ist
+from .live_feed import STATE_SIMULATED
 from .settings_store import SettingsStore
 
 log = logging.getLogger(__name__)
@@ -126,6 +127,8 @@ class DataSource:
     enabled: bool = True
     notice: str = ""
     supports_oi: bool = False
+    #: The feed state this entry was rendered from, or "" for non-feed sources.
+    state: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -137,6 +140,7 @@ class DataSource:
             "enabled": self.enabled,
             "notice": self.notice,
             "supports_oi": self.supports_oi,
+            "state": self.state,
         }
 
 
@@ -188,7 +192,9 @@ class KiteConnectService:
     feed_provider: Callable[[], Any] | None = None
     _pending: _Pending | None = field(default=None, init=False)
     _profile: tuple[str, float, SessionInfo] | None = field(default=None, init=False)
-    _data: tuple[str, float, tuple[DataSource, ...]] | None = field(default=None, init=False)
+    #: Only the plan probe is cached (token, expiry, result): the feed state can
+    #: change at any moment, so everything else is recomputed per call (N2).
+    _probe: tuple[str, float, tuple[bool, str, str]] | None = field(default=None, init=False)
 
     # ------------------------------------------------------------------- helpers
     @property
@@ -286,7 +292,7 @@ class KiteConnectService:
         write_access_token(self.env_file, access_token)
         self._pending = None
         self._profile = None
-        self._data = None
+        self._probe = None
         self.on_change()
         return ConnectResult(
             ok=True,
@@ -375,7 +381,7 @@ class KiteConnectService:
         write_access_token(self.env_file, "")
         self._pending = None
         self._profile = None
-        self._data = None
+        self._probe = None
         self.on_change()
         return ConnectResult(
             ok=True,
@@ -384,7 +390,8 @@ class KiteConnectService:
         )
 
     # --------------------------------------------------------------- data sources
-    def _probe_live(self, settings: Settings, token: str) -> tuple[bool, str]:
+    def _probe_live(self, settings: Settings, token: str) -> tuple[bool, str, str]:
+        """One live ``ltp`` call: (available, reason, classification kind)."""
         try:
             data = self._client(settings, token).ltp(["NSE:NIFTY 50"])
         except Exception as exc:
@@ -395,117 +402,155 @@ class KiteConnectService:
                     False,
                     "Your Kite plan has no market data, so the live chart is unavailable; "
                     "the delayed chart will be used.",
+                    kind,
                 )
             if kind == "token":
-                return False, "Token expired. Reconnect to check your Kite data plan."
+                return False, "Token expired. Reconnect to check your Kite data plan.", kind
             if kind == "rate":
-                return False, "Kite is rate limiting this account; try again in a minute."
+                return (
+                    False,
+                    "Kite is rate limiting this account; try again in a minute.",
+                    kind,
+                )
             if kind == "network":
-                return False, "Kite is unreachable, so live data cannot be checked."
-            return False, "Kite could not confirm live market data for this account."
+                return False, "Kite is unreachable, so live data cannot be checked.", kind
+            return False, "Kite could not confirm live market data for this account.", kind
         if data:
-            return True, "Live data available from your Kite account."
-        return False, "Kite returned no data for the probe, so live data is unavailable."
+            return True, "Live data available from your Kite account.", "ok"
+        return False, "Kite returned no data for the probe, so live data is unavailable.", "empty"
+
+    def _probe_with_cache(
+        self, settings: Settings, token: str, *, force: bool = False
+    ) -> tuple[bool, str, str]:
+        """The plan probe with its TTL cache — the only cached part of this payload.
+
+        Everything else in ``data_sources`` is recomputed on every call (N2),
+        because the feed state can change at any moment.
+        """
+        now = self.monotonic()
+        if (
+            not force
+            and self._probe is not None
+            and self._probe[0] == token
+            and now - self._probe[1] < DATA_TTL_SECONDS
+        ):
+            return self._probe[2]
+        result = self._probe_live(settings, token)
+        self._probe = (token, now, result)
+        return result
+
+    @staticmethod
+    def _align_feed_state(feed: Any, available: bool, kind: str) -> None:
+        """Let the probe result correct the feed's terminal states (F5).
+
+        A permission failure means the account has no market-data plan even
+        though the ticker may be running; a token failure means the same dead
+        token. A successful probe releases ``no_plan`` so the feed may start.
+        """
+        if feed is None:
+            return
+        if kind == "permission":
+            feed.set_no_plan("Your Kite plan has no market data. Delayed NSE is used instead.")
+        elif kind == "token":
+            feed.set_token_expired()
+        elif available:
+            feed.clear_no_plan()
 
     def data_sources(self, *, force: bool = False) -> dict[str, Any]:
         settings = self.settings_provider()
         token = settings.kite.token if settings is not None else ""
-        now = self.monotonic()
         feed = self.feed_provider() if self.feed_provider is not None else None
-        if (
-            not force
-            and self._data is not None
-            and self._data[0] == token
-            and now - self._data[1] < DATA_TTL_SECONDS
-        ):
-            sources = self._data[2]
+        is_sim = bool(feed and getattr(feed, "is_simulated", False))
+        if is_sim:
+            live = DataSource(
+                "kite_live",
+                "Kite live (simulated)",
+                True,
+                "Simulated market data feed. Not real market data.",
+                badge="SIMULATED",
+                enabled=True,
+                notice="SIMULATED, not real market data",
+                supports_oi=True,
+                state=STATE_SIMULATED,
+            )
+        elif not token:
+            live = DataSource(
+                "kite_live",
+                "Kite live",
+                False,
+                "Connect to Zerodha to use live Kite market data.",
+                badge="OFF",
+                enabled=False,
+                notice=(
+                    "Connect to your Zerodha account with a market data plan to use live data."
+                ),
+                supports_oi=True,
+            )
         else:
-            if feed is not None and getattr(feed, "is_simulated", False):
-                live = DataSource(
-                    "kite_live",
-                    "Kite live (simulated)",
-                    True,
-                    "Simulated market data feed. Not real market data.",
-                    badge="SIMULATED",
-                    enabled=True,
-                    notice="SIMULATED, not real market data",
-                    supports_oi=True,
-                )
-            elif not token:
+            assert settings is not None
+            available, reason, kind = self._probe_with_cache(settings, token, force=force)
+            self._align_feed_state(feed, available, kind)
+            # The feed owns enabled + wording + badge, so this payload cannot
+            # disagree with the chart or the picker (F5, N1).
+            view = getattr(feed, "availability", None)
+            if view is not None:
+                entry = view()
                 live = DataSource(
                     "kite_live",
                     "Kite live",
-                    False,
-                    "Connect to Zerodha to use live Kite market data.",
-                    badge="LIVE",
-                    enabled=False,
-                    notice=(
-                        "Connect to your Zerodha account with a market data plan to use live data."
-                    ),
+                    available,
+                    reason,
+                    badge=entry.badge,
+                    enabled=bool(entry.enabled),
+                    notice=entry.notice,
                     supports_oi=True,
+                    state=entry.state,
                 )
             else:
-                assert settings is not None
-                available, reason = self._probe_live(settings, token)
+                # Legacy feed object without the availability view: keep the
+                # pre-P0.1 wording but never claim a state we cannot know.
+                notice = "Live data available from your Kite account." if available else reason
                 if feed is None:
                     notice = (
                         "Live Kite data is not available here. The delayed NSE source works now."
                     )
-                    enabled = False
-                else:
-                    # The feed owns enabled + wording, so this payload cannot
-                    # disagree with the chart or the picker (F5).
-                    availability = getattr(feed, "availability", None)
-                    if availability is not None:
-                        view = availability()
-                        enabled = bool(view.enabled)
-                        notice = view.notice
-                    else:
-                        enabled = available
-                        notice = (
-                            "Live data available from your Kite account." if available else reason
-                        )
-                    if not enabled and not notice:
-                        notice = reason
                 live = DataSource(
                     "kite_live",
                     "Kite live",
                     available if feed is not None else False,
                     reason,
                     badge="LIVE",
-                    enabled=enabled,
+                    enabled=available if feed is not None else False,
                     notice=notice,
                     supports_oi=True,
                 )
-            sources = (
-                DataSource(
-                    "nse_delayed",
-                    "Delayed NSE",
-                    True,
-                    "Delayed NSE quotes need no login and are used when live data is unavailable.",
-                    badge="DELAYED",
-                    notice="Unofficial delayed data from a free public source. Not live.",
-                ),
-                live,
-                DataSource(
-                    "crypto_showcase",
-                    "Crypto showcase",
-                    True,
-                    "A built-in demonstration feed that needs no account.",
-                    badge="SHOWCASE",
-                    notice="Crypto showcase is not NSE data.",
-                ),
-                DataSource(
-                    "demo",
-                    "Demo replay",
-                    True,
-                    "The offline practice replay; no account, no internet.",
-                    badge="DEMO",
-                    notice="A made-up day for practice. Nothing is saved.",
-                ),
-            )
-            self._data = (token, now, sources)
-        is_sim = bool(feed and getattr(feed, "is_simulated", False))
+        sources = (
+            DataSource(
+                "nse_delayed",
+                "Delayed NSE",
+                True,
+                "Delayed NSE quotes need no login and are used when live data is unavailable.",
+                badge="DELAYED",
+                notice="Unofficial delayed data from a free public source. Not live.",
+            ),
+            live,
+            DataSource(
+                "crypto_showcase",
+                "Crypto showcase",
+                True,
+                "A built-in demonstration feed that needs no account.",
+                badge="SHOWCASE",
+                notice="Crypto showcase is not NSE data.",
+            ),
+            DataSource(
+                "demo",
+                "Demo replay",
+                True,
+                "The offline practice replay; no account, no internet.",
+                badge="DEMO",
+                notice="A made-up day for practice. Nothing is saved.",
+            ),
+        )
         return {
             "sources": [source.as_dict() for source in sources],
             "connected": bool(token) and not is_sim,

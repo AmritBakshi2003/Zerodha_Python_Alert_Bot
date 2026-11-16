@@ -673,12 +673,26 @@ code {
 .source-badge[data-badge="LIVE"].is-waiting,
 .source-badge[data-badge="LIVE"].is-stale { background: #f59e0b; color: #111827; border-color: #111827; }
 .source-badge[data-badge="SIMULATED"] { background: #7c3aed; color: #ffffff; border-color: #4c1d95; }
+/* Honest feed-state labels (P0.1): the badge can only read LIVE while real
+   ticks are fresh, so every other state gets its own visible colour. */
+.source-badge[data-badge="CONNECTING"] { background: #0e7490; color: #ffffff; border-color: #083344; }
+.source-badge[data-badge="STALE"] { background: #f59e0b; color: #111827; border-color: #111827; }
+.source-badge[data-badge="CLOSED"] { background: #64748b; color: #ffffff; border-color: #1e293b; }
+.source-badge[data-badge="EXPIRED"] { background: #b91c1c; color: #ffffff; border-color: #450a0a; }
+.source-badge[data-badge="NO PLAN"] { background: #9d174d; color: #ffffff; border-color: #500724; }
+.source-badge[data-badge="OFF"] { background: #6b7280; color: #ffffff; border-color: #374151; }
 @media (prefers-color-scheme: dark) {
   .source-badge[data-badge="DELAYED"] { border-color: #fff7ed; }
   .source-badge[data-badge="SHOWCASE"] { border-color: #bfdbfe; }
   .source-badge[data-badge="DEMO"] { border-color: #e5e7eb; }
   .source-badge[data-badge="LIVE"] { border-color: #bbf7d0; }
   .source-badge[data-badge="SIMULATED"] { border-color: #ddd6fe; }
+  .source-badge[data-badge="CONNECTING"] { border-color: #cffafe; }
+  .source-badge[data-badge="STALE"] { border-color: #fff7ed; }
+  .source-badge[data-badge="CLOSED"] { border-color: #e2e8f0; }
+  .source-badge[data-badge="EXPIRED"] { border-color: #fecaca; }
+  .source-badge[data-badge="NO PLAN"] { border-color: #fbcfe8; }
+  .source-badge[data-badge="OFF"] { border-color: #e5e7eb; }
 }
 
 .live-feed-bar {
