@@ -178,6 +178,9 @@ def build_runtime(
         open_value=settings.session.open_time,
         close_value=settings.session.close_time,
         holiday_file=settings.session.holiday_file,
+        special_sessions_file=settings.session.special_sessions_file,
+        pre_open_value=settings.session.pre_open_time,
+        closing_value=settings.session.closing_end,
     )
     metrics = Metrics()
     log_dir = settings.observability.log_dir

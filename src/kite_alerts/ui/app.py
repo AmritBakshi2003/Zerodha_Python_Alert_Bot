@@ -414,6 +414,7 @@ def create_app(context: UiContext) -> FastAPI:
 
     @app.get("/api/about")
     def about() -> dict[str, Any]:
+        holidays = context.chart.holiday_summary() if context.chart is not None else None
         settings = context.settings
         return {
             "version": context.version,
@@ -425,6 +426,7 @@ def create_app(context: UiContext) -> FastAPI:
             "settings_error": context.settings_error,
             "kite_configured": bool(settings and settings.kite.api_key),
             "token_present": bool(settings and settings.kite.token),
+            "holidays": holidays,
             "simulate_kite": context.simulate_kite,
             "demo": True,
             "redirect_url": context.kite.redirect_url if context.kite else "",

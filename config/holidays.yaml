@@ -4,7 +4,14 @@
 # empty list is safe: the staleness watchdog still notices a closed market and the
 # bot simply stays quiet.
 #
-# Fill this in from the official NSE holiday list for the year you are running in.
+# An empty list (or a list with no dates for the current year) is reported once at
+# startup, because on a holiday the bot would otherwise look like a stalled feed.
+#
+# Refresh it from the official NSE page instead of typing dates by hand:
+#
+#   python scripts/refresh_holidays.py --year 2026 --dry-run
+#   python scripts/refresh_holidays.py --year 2026
+#
 # Accepted shapes:
 #
 #   holidays: [2026-01-26, 2026-03-04]
@@ -12,5 +19,4 @@
 #   holidays:
 #     2026-01-26: Republic Day
 #
-# A stale list is reported at startup via TradingCalendar.holidays_stale_days().
 holidays: []

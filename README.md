@@ -222,7 +222,9 @@ Secrets are `SecretStr` and never appear in logs, `repr()` or `config-check` out
 | Key | Default | Meaning |
 |---|---|---|
 | `SESSION_OPEN` / `SESSION_CLOSE` | `09:15` / `15:30` | IST session window; candles outside it are ignored. |
-| `HOLIDAY_FILE` | `config/holidays.yaml` | YAML list of NSE holidays. Empty is safe. |
+| `SESSION_PRE_OPEN` / `SESSION_CLOSING_END` | `09:00` / `16:00` | Reported pre-open and closing windows (not traded). |
+| `HOLIDAY_FILE` | `config/holidays.yaml` | YAML list of NSE holidays; warns at startup while empty/stale. |
+| `SPECIAL_SESSIONS_FILE` | `config/sessions.yaml` | Dated overrides (muhurat trading). |
 | `WARMUP_DAYS` | `4` | Days of history fetched to seed the indicators. |
 
 ### Strategy
