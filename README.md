@@ -259,6 +259,7 @@ Delivery tuning: `NOTIFY_RETRIES`, `NOTIFY_TIMEOUT_SECONDS`,
 | `SYMBOL_STALE_SECONDS` | `600` | Per-instrument silence before that symbol is reported. |
 | `RECONNECT_MAX_TRIES` / `RECONNECT_MIN_DELAY` / `RECONNECT_MAX_DELAY` | `25` / `1` / `60` | SDK reconnect policy. |
 | `TICK_QUEUE_SIZE` | `20000` | Websocket → worker queue; overflow is dropped **and counted**. |
+| `NOTIFY_QUEUE_MAX` | `5000` | Notifier queue; overflow drops the oldest (system first, then alerts) and is counted. |
 | `HEARTBEAT_MINUTES` | `60` | "Still alive" message; `0` disables. |
 | `HTTP_ENABLED` / `HTTP_HOST` / `HTTP_PORT` | `true` / `127.0.0.1` / `9109` | `/health` and `/metrics`. |
 | `HTTP_ALLOW_PUBLIC` | `false` | Must be set explicitly to bind a non-loopback host. |

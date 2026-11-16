@@ -33,6 +33,14 @@ export function show(node, visible) {
 
 export async function api(path, options) {
   const settings = Object.assign({ credentials: "same-origin", cache: "no-store" }, options || {});
+  const method = String(settings.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    const meta = document.querySelector('meta[name="kite-alerts-csrf"]');
+    const token = meta ? meta.getAttribute("content") : "";
+    if (token) {
+      settings.headers = Object.assign({}, settings.headers || {}, { "X-Kite-Alerts-CSRF": token });
+    }
+  }
   const response = await fetch(path, settings);
   let data = null;
   try {

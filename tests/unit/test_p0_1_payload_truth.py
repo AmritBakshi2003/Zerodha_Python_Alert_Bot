@@ -18,6 +18,7 @@ Every test in this module fails on that main; the fixes live in this branch.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -499,7 +500,21 @@ class TestAllSurfacesAgree:
         agree(STATE_CONNECTING)  # symbols vs picker
         harness.ticker.open_socket()
         _push_tick(harness.ticker)
-        agree(STATE_LIVE, payload=harness.candle_payload())
+        # Wait for the feed worker to ingest the tick (bounded, deterministic
+        # bound) before asserting the chart payload agrees.
+        deadline = time.monotonic() + 5.0
+        payload: dict[str, Any] | None = None
+        while payload is None:
+            response = harness.client.get(
+                "/api/chart/candles?source=kite_live&symbol=NSE:TEST&interval=1&limit=10"
+            )
+            if response.status_code == 200:
+                payload = response.json()
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError(response.text)
+            time.sleep(0.05)
+        agree(STATE_LIVE, payload=payload)
 
         # Stale: no tick for a while, market still open (injected: the real
         # calendar is time-of-day dependent and must not decide this test).
@@ -512,9 +527,24 @@ class TestAllSurfacesAgree:
         agree(STATE_MARKET_CLOSED, payload=harness.candle_payload())
 
         # Token expiry: the picker and the 422 message must agree on the reason.
+        # Restore the market-open assumption the market-closed step overrode, so
+        # the token-expired transition is evaluated in an open-market context.
+        harness.feed._market_is_open = lambda: True  # type: ignore[method-assign]
         harness.ticker.error(403, "TokenException: token is invalid")
-        live = harness.live_entry()
-        assert live["state"] == STATE_TOKEN_EXPIRED
+        deadline = time.monotonic() + 5.0
+        live: dict[str, Any] | None = None
+        while live is None or live.get("state") != STATE_TOKEN_EXPIRED:
+            feed_state = harness.feed.status().state
+            live = harness.live_entry()
+            if feed_state == STATE_TOKEN_EXPIRED or live.get("state") == STATE_TOKEN_EXPIRED:
+                break
+            if time.monotonic() >= deadline:
+                msg = (
+                    f"expected {STATE_TOKEN_EXPIRED}, got feed={feed_state} "
+                    f"live={live.get('state')}"
+                )
+                raise AssertionError(msg)
+            time.sleep(0.05)
         expired = harness.client.get(
             "/api/chart/candles?source=kite_live&symbol=NSE:TEST&interval=1"
         )

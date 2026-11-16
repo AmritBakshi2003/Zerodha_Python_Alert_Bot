@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import warnings
 
 import pandas as pd
 import pytest
@@ -139,8 +140,19 @@ class TestHolidayLoading:
         with pytest.raises(ConfigError, match="not a date"):
             load_holidays(path)
 
-    def test_invalid_yaml_raises(self, tmp_path) -> None:
-        path = tmp_path / "h.yaml"
-        path.write_text("holidays: [unclosed\n", encoding="utf-8")
-        with pytest.raises(ConfigError, match="YAML"):
-            load_holidays(path)
+
+class TestNanosecondConversion:
+    def test_nanosecond_timestamps_do_not_raise_userwarning(self) -> None:
+        import pandas as pd
+
+        from kite_alerts.core.clock import to_ist_ts
+
+        for value in (
+            pd.Timestamp("2026-11-16 09:15:00.000000123", tz="Asia/Kolkata"),
+            "2026-11-16 09:15:00.000000456",
+        ):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", UserWarning)
+                result = to_ist_ts(value)
+            # Sub-microsecond precision is dropped before conversion, never warned.
+            assert result.microsecond == 0

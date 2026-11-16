@@ -267,6 +267,7 @@ class NotifySettings(BaseModel):
     timeout_seconds: float = Field(10.0, gt=0, le=120)
     max_per_minute: int = Field(20, ge=1, le=600)
     dedup_seconds: int = Field(300, ge=0, le=86400)
+    queue_max: int = Field(5000, ge=1, le=1_000_000)
 
     @model_validator(mode="after")
     def _validate_channels(self) -> NotifySettings:
@@ -532,6 +533,7 @@ def _build(env: _Env) -> dict[str, Any]:
         timeout_seconds=env.number("NOTIFY_TIMEOUT_SECONDS", 10.0),
         max_per_minute=env.integer("NOTIFY_MAX_PER_MINUTE", 20),
         dedup_seconds=env.integer("NOTIFY_DEDUP_SECONDS", 300),
+        queue_max=env.integer("NOTIFY_QUEUE_MAX", 5000),
     )
 
     return {
@@ -591,6 +593,33 @@ def _format_validation_error(exc: ValidationError) -> str:
     return "invalid configuration:\n" + "\n".join(lines)
 
 
+def _anchor_path(value: Path | None, base: Path) -> Path | None:
+    if value is None or value.is_absolute():
+        return value
+    return base / value
+
+
+def _anchor_paths(values: dict[str, Any], base: Path) -> dict[str, Any]:
+    result = dict(values)
+    result["db_path"] = _anchor_path(result.get("db_path"), base)
+    result["cache_dir"] = _anchor_path(result.get("cache_dir"), base)
+    result["overrides_file"] = _anchor_path(result.get("overrides_file"), base)
+    obs = result.get("observability")
+    if obs is not None:
+        result["observability"] = obs.model_copy(
+            update={"log_dir": _anchor_path(obs.log_dir, base)}
+        )
+    ses = result.get("session")
+    if ses is not None:
+        result["session"] = ses.model_copy(
+            update={
+                "holiday_file": _anchor_path(ses.holiday_file, base),
+                "special_sessions_file": _anchor_path(ses.special_sessions_file, base),
+            }
+        )
+    return result
+
+
 def load_settings(
     env_file: str | Path | None = ".env",
     *,
@@ -617,6 +646,10 @@ def load_settings(
     env = _Env(merged)
     try:
         values = _build(env)
+        # Anchor relative paths to the .env file's folder so the bot and the
+        # dashboard agree on where data lives regardless of the process cwd.
+        base = Path(env_file).absolute().parent if env_file else Path.cwd()
+        values = _anchor_paths(values, base)
         unknown = sorted(
             key
             for key in file_values

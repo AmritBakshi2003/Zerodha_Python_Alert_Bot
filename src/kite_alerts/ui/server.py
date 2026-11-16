@@ -110,6 +110,18 @@ def run_ui(
         )
     if context.settings is not None:
         print(f"Reading alert history from: {context.history.path}", flush=True)
+        print(
+            f"Resolved paths: db={context.settings.db_path} "
+            f"log_dir={context.settings.observability.log_dir} "
+            f"cache_dir={context.settings.cache_dir}",
+            flush=True,
+        )
+        if Path(context.history.path) != Path(context.settings.db_path):
+            print(
+                "WARNING: dashboard DB differs from the one configured in .env "
+                f"({context.history.path} vs {context.settings.db_path}).",
+                flush=True,
+            )
 
     if open_browser:
         threading.Thread(

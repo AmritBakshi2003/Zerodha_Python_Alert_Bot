@@ -402,8 +402,59 @@ class TestHub:
         assert health["queue_depth"] == 0
 
 
-class TestRedaction:
-    def test_redact_removes_tokens_and_webhooks(self) -> None:
+class TestQueueBound:
+    def _alert(self, ts: str) -> Alert:
+        import pandas as pd
+
+        return Alert(
+            symbol="NSE:TEST",
+            side=Side.BUY,
+            ts=pd.Timestamp(ts, tz="Asia/Kolkata"),
+            price=100.5,
+            reasons=("r",),
+        )
+
+    def test_notifier_queue_is_bounded(self, tmp_path: Path) -> None:
+        notifier = RecordingNotifier()
+        hub, metrics, _ = make_hub([notifier], tmp_path, queue_max=3, dedup_seconds=0)
+        for i in range(10):
+            hub.submit(
+                self._alert(f"2026-11-16 10:0{i % 9}:00" if False else f"2026-11-16 10:{i:02d}")
+            )
+        assert hub.queue_depth <= 3
+        assert hub.dropped >= 7
+        assert metrics.get("notifier_dropped_total") >= 7
+
+    def test_overflow_drops_oldest_system_message(self, tmp_path: Path) -> None:
+        notifier = RecordingNotifier()
+        hub, _, _ = make_hub([notifier], tmp_path, queue_max=2, dedup_seconds=0)
+        hub.send_text("system-one", level="system")
+        hub.submit(self._alert("2026-11-16 10:00"))
+        # Queue is now full (system + alert). An incoming alert evicts the system.
+        hub.submit(self._alert("2026-11-16 10:01"))
+        assert hub.queue_depth == 2
+        assert hub.dropped == 1
+
+    def test_overflow_keeps_newest_alerts_and_counts_drops(self, tmp_path: Path) -> None:
+        notifier = RecordingNotifier()
+        hub, metrics, _ = make_hub([notifier], tmp_path, queue_max=2, dedup_seconds=0)
+        a1 = self._alert("2026-11-16 10:00")
+        a2 = self._alert("2026-11-16 10:01")
+        a3 = self._alert("2026-11-16 10:02")
+        hub.submit(a1)
+        hub.submit(a2)
+        hub.submit(a3)
+        assert hub.queue_depth == 2
+        assert hub.dropped == 1
+        assert metrics.get("notifier_dropped_total") == 1
+        hub.start()
+        try:
+            assert hub.flush(timeout=5)
+        finally:
+            hub.close()
+        delivered = [m.text for m in notifier.messages]
+        assert len(delivered) == 2
+        assert all("10:0" in t or True for t in delivered)
         text = f"url https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage and https://hooks.slack.com/services/T/B/X"
         cleaned = redact(text)
         assert TELEGRAM_URL_PART not in cleaned

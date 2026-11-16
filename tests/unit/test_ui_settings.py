@@ -313,3 +313,38 @@ class TestWriterHelpers:
         groups = {group[0] for group in SETTINGS_GROUPS} | {"connect"}
         assert all(spec.group in groups for spec in ALL_SPECS)
         assert SPEC_BY_ENV["TELEGRAM_BOT_TOKEN"].group == "notifications"
+
+
+class TestNoTmpInMessages:
+    def test_no_settings_message_contains_tmp(self, ui, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, context, _env_path = ui
+        store = context.settings_store
+        assert store is not None
+
+        r = client.put("/api/settings", json={"values": {"WARMUP_BARS": 120}})
+        store.min_interval = 0.0
+        store._last_save = store.clock()
+        r_rate = client.put("/api/settings", json={"values": {"WARMUP_BARS": 121}})
+        r_bad = client.put("/api/settings", json={"values": {"WARMUP_BARS": 0}})
+        r_unk = client.put("/api/settings", json={"values": {"BOGUS_KEY": 1}})
+        r_ml = client.put("/api/settings", json={"values": {"SYMBOLS": "NSE:A\nNSE:B"}})
+        r_sec = client.put("/api/settings", json={"values": {"KITE_ACCESS_TOKEN": "x"}})
+        r_check = client.post("/api/settings/check")
+
+        original_replace = store.replace
+
+        def boom(*_a: object, **_k: object) -> None:
+            raise OSError("disk full")
+
+        store.replace = boom  # type: ignore[assignment]
+        store.min_interval = 0.0
+        store._last_save = None
+        r_fail = client.put("/api/settings", json={"values": {"WARMUP_BARS": 122}})
+        store.replace = original_replace
+
+        for resp in (r, r_rate, r_bad, r_unk, r_ml, r_sec, r_check, r_fail):
+            body = resp.json()
+            texts = [body.get("message", "")]
+            texts.extend(err.get("message", "") for err in body.get("errors", []))
+            for text in texts:
+                assert ".tmp" not in text, text
