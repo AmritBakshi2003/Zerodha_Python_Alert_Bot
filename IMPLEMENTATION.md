@@ -29,19 +29,19 @@ clean (82 source files), and `tests/test_alerts_only.py` green.
 | F3 official holiday list | **PARTIAL** — parser + script shipped; NSE blocks scripted fetches, owner must run `scripts/refresh_holidays.py` once (N4) | `config/holidays.yaml` |
 | F4 market clock | **DONE** (P1, PR #20) | `core/calendar.py`, `ui/status.py` |
 | F5 one availability truth | **DONE** (P0.1, this branch) | `ui/live_feed.py availability()`, read by every surface |
-| F6 mutations without Origin | not started (P2) | — |
-| F7 `.env.tmp` in messages | not reproduced | §2.7 |
-| F8 nanosecond UserWarning | not started (P2) | — |
+| F6 mutations without Origin | done (P2) | — |
+| F7 .env.tmp in messages | not reproduced (regression test added, P2) | �2.7 |
+| F8 nanosecond UserWarning | done (P2) | — |
 | F9 release workflow | not started (P3) | — |
 | F10 CI misses 3.14 | not started (P3) | — |
 | F11 product path under-tested | not started (P4) | — |
 | F12 files too large | not started (P5) | — |
 | F13 documentation drift | not started (P6) | — |
-| F14 relative paths | not started (P2) | — |
+| F14 relative paths | done (P2) | — |
 | F15 no frontend tests | not started (P4) | — |
 | F16 delayed/crypto vs real providers | not started (P3) | — |
 | F17 SSE blocks the event loop | **DONE** fix on `main`; P0.1 adds the lifecycle tests that guard it (N3) | `ui/app.py` stream |
-| F18 notifier queue unbounded | not started (**assigned to P2**) | — |
+| F18 notifier queue unbounded | done (P2) | — |
 | F19 forming candle from wall clock | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F20 stop() poisons the feed | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F21 watchlist write race | not started (**assigned to P2b**) | — |
@@ -49,7 +49,7 @@ clean (82 source files), and `tests/test_alerts_only.py` green.
 | F23 golden-file line endings | not started (**assigned to P3**) | — |
 | F24 backoff constants unused | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F25 calendar cache by identity | not started (**assigned to P3**) | — |
-| F26 `.env` read-modify-write race | not started (folded into P2) | — |
+| F26 `.env` read-modify-write race | done (P2) | — |
 | N1 surfaces lie after token expiry | **DONE** (P0.1, this branch) | §2.N |
 | N2 data-sources 60 s lag | **DONE** (P0.1, this branch) | §2.N |
 | N3 SSE loop untested | **DONE** (P0.1, this branch; tests pass on `main` by design) | §2.N |

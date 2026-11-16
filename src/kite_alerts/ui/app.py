@@ -33,15 +33,22 @@ from __future__ import annotations
 import json
 import logging
 import math
+import secrets
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -63,7 +70,12 @@ from .kite_connect import (
     default_kite_factory,
 )
 from .notifications import TelegramSetupService
-from .security import SecurityMiddleware, require_same_origin
+from .security import (
+    CSRF_COOKIE_NAME,
+    SecurityMiddleware,
+    require_csrf_token,
+    require_same_origin,
+)
 from .settings_schema import connect_payload, settings_payload
 from .settings_store import SettingsStore
 from .status import StatusService, http_probe
@@ -73,6 +85,7 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).with_name("static")
 INDEX_FILE = STATIC_DIR / "index.html"
+INDEX_HTML = INDEX_FILE.read_text(encoding="utf-8")
 LICENSE_FILE = STATIC_DIR / "vendor" / "lightweight-charts" / "LICENSE"
 NOTICE_FILE = STATIC_DIR / "vendor" / "lightweight-charts" / "NOTICE"
 
@@ -359,6 +372,31 @@ def _practice_payload(timeline: DemoTimeline, version: str) -> dict[str, Any]:
     }
 
 
+def _resolved_paths(context: UiContext) -> dict[str, Any]:
+    """Absolute paths the dashboard actually uses (F14)."""
+    settings = context.settings
+    history_path = getattr(context.history, "path", None)
+    warnings: list[str] = []
+    if (
+        settings is not None
+        and history_path is not None
+        and Path(history_path) != Path(settings.db_path)
+    ):
+        warnings.append(
+            f"Dashboard reads {history_path} but .env configures {settings.db_path}; "
+            "they differ (check --db / env_file)."
+        )
+    return {
+        "env_file": str(context.env_file),
+        "history_db": str(history_path) if history_path is not None else None,
+        "settings_db": str(settings.db_path) if settings is not None else None,
+        "log_dir": str(settings.observability.log_dir) if settings is not None else None,
+        "cache_dir": str(settings.cache_dir) if settings is not None else None,
+        "watchlist": str(context.env_file.parent / "data" / "chart_watchlist.json"),
+        "warnings": warnings,
+    }
+
+
 def create_app(context: UiContext) -> FastAPI:
     """Build the FastAPI app around an explicit context (no globals, easy to test)."""
 
@@ -401,8 +439,27 @@ def create_app(context: UiContext) -> FastAPI:
         return context.settings
 
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(INDEX_FILE, media_type="text/html; charset=utf-8")
+    def index(request: Request) -> Response:
+        existing = request.cookies.get(CSRF_COOKIE_NAME)
+        if not existing or len(existing) < 16:
+            token = secrets.token_urlsafe(32)
+            issued: str | None = token
+        else:
+            token = existing
+            issued = None
+        html = INDEX_HTML
+        if "</head>" in html:
+            html = html.replace(
+                "</head>",
+                f'<meta name="kite-alerts-csrf" content="{token}">\n</head>',
+                1,
+            )
+        response = HTMLResponse(html, media_type="text/html; charset=utf-8")
+        if issued is not None:
+            response.set_cookie(
+                CSRF_COOKIE_NAME, issued, httponly=True, samesite="strict", path="/"
+            )
+        return response
 
     @app.get("/license", include_in_schema=False)
     def license_text() -> FileResponse:
@@ -413,10 +470,14 @@ def create_app(context: UiContext) -> FastAPI:
         return FileResponse(NOTICE_FILE, media_type="text/plain; charset=utf-8")
 
     @app.get("/api/about")
-    def about() -> dict[str, Any]:
+    def about(request: Request, response: Response) -> dict[str, Any]:
         holidays = context.chart.holiday_summary() if context.chart is not None else None
         settings = context.settings
-        return {
+        token = request.cookies.get(CSRF_COOKIE_NAME)
+        if not token or len(token) < 16:
+            token = secrets.token_urlsafe(32)
+            response.set_cookie(CSRF_COOKIE_NAME, token, httponly=True, samesite="strict", path="/")
+        payload = {
             "version": context.version,
             "mode": MODE,
             "alerts_only": True,
@@ -430,7 +491,14 @@ def create_app(context: UiContext) -> FastAPI:
             "simulate_kite": context.simulate_kite,
             "demo": True,
             "redirect_url": context.kite.redirect_url if context.kite else "",
+            "csrf_token": token,
+            "paths": _resolved_paths(context),
         }
+        return payload
+
+    @app.get("/api/about.paths")
+    def about_paths() -> dict[str, Any]:
+        return _resolved_paths(context)
 
     @app.get("/api/status")
     def status() -> dict[str, Any]:
@@ -481,6 +549,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.post("/api/test-alert")
     def test_alert(request: Request) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         outcome = context.test_alerts.send()
         payload = outcome.as_dict()
         if outcome.retry_after > 0:
@@ -507,6 +576,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.put("/api/settings")
     def put_settings(request: Request, update: SettingsUpdate) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         assert context.settings_store is not None
         result = context.settings_store.save(update.values)
         payload = result.as_dict()
@@ -524,6 +594,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.post("/api/settings/check")
     def check_settings(request: Request) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         assert context.settings_store is not None
         result = context.settings_store.check()
         payload = result.as_dict()
@@ -533,6 +604,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.post("/api/kite/login")
     def kite_login(request: Request) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         assert context.kite is not None
         try:
             start = context.kite.start()
@@ -594,6 +666,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.post("/api/kite/manual-token")
     def manual_token(request: Request, payload: ManualToken) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         assert context.kite is not None
         effective_state = payload.state or request.cookies.get(STATE_COOKIE, "")
         try:
@@ -617,6 +690,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.post("/api/kite/disconnect")
     def kite_disconnect(request: Request) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         assert context.kite is not None
         return JSONResponse(context.kite.disconnect().as_dict())
 
@@ -714,6 +788,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.post("/api/chart/watchlist")
     def chart_watchlist_add(request: Request, payload: WatchlistSymbol) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         chart_guard()
         assert context.chart is not None
         try:
@@ -724,6 +799,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.delete("/api/chart/watchlist")
     def chart_watchlist_remove(request: Request, payload: WatchlistSymbol) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         chart_guard()
         assert context.chart is not None
         try:
@@ -812,6 +888,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.post("/api/kite/simulate/disconnect")
     def sim_disconnect(request: Request) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         if not context.simulate_kite or context.simulator is None:
             raise HTTPException(status_code=400, detail="Simulator mode is not active.")
         context.simulator.trigger_disconnect()
@@ -820,6 +897,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.post("/api/kite/simulate/token-expiry")
     def sim_token_expiry(request: Request) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         if not context.simulate_kite or context.simulator is None:
             raise HTTPException(status_code=400, detail="Simulator mode is not active.")
         context.simulator.trigger_token_expiry()
@@ -828,6 +906,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.post("/api/kite/simulate/reconnect")
     def sim_reconnect(request: Request) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         if not context.simulate_kite or context.simulator is None:
             raise HTTPException(status_code=400, detail="Simulator mode is not active.")
         context.simulator.trigger_reconnect()
@@ -837,6 +916,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.post("/api/notifications/telegram/chat-id")
     def telegram_chat_id(request: Request) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         assert context.telegram is not None
         return JSONResponse(context.telegram.find_chat_id().as_dict())
 
@@ -844,6 +924,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.post("/api/practice/check")
     def practice_check(request: Request) -> JSONResponse:
         require_same_origin(request)
+        require_csrf_token(request)
         if context.settings is None:
             return _error(503, NO_SETTINGS_MESSAGE, "no_settings")
         timeline = build_demo_timeline_for(context.settings.params)

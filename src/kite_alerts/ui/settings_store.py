@@ -33,6 +33,7 @@ from typing import Any
 
 from dotenv import dotenv_values
 
+from ..config.env_file import env_write_lock
 from ..config.settings import load_settings
 from ..core.errors import ConfigError
 from .settings_schema import (
@@ -224,45 +225,47 @@ class SettingsStore:
         if not updates:
             return SaveResult(ok=True, message="Nothing changed.")
 
-        existing = self.env_file.read_text(encoding="utf-8") if self.env_file.exists() else ""
-        candidate = apply_updates(existing, updates)
-        temp = self.env_file.with_name(self.env_file.name + ".tmp")
-        temp.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            _write_temp(temp, candidate)
-        except OSError:
-            with contextlib.suppress(OSError):
-                temp.unlink()
-            return SaveResult(
-                ok=False,
-                message="The settings file could not be written. Nothing was changed.",
-            )
+        with env_write_lock(self.env_file):
+            existing = self.env_file.read_text(encoding="utf-8") if self.env_file.exists() else ""
+            candidate = apply_updates(existing, updates)
+            temp = self.env_file.with_name(self.env_file.name + ".tmp")
+            temp.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                _write_temp(temp, candidate)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    temp.unlink()
+                return SaveResult(
+                    ok=False,
+                    message="The settings file could not be written. Nothing was changed.",
+                )
 
-        try:
-            validated = load_settings(temp, environ={})
-        except ConfigError as exc:
-            with contextlib.suppress(OSError):
-                temp.unlink()
-            field_errors = parse_field_errors(str(exc))
-            return SaveResult(
-                ok=False,
-                message="Some values are not valid, so nothing was saved.",
-                errors=field_errors,
-            )
+            try:
+                validated = load_settings(temp, environ={})
+            except ConfigError as exc:
+                with contextlib.suppress(OSError):
+                    temp.unlink()
+                field_errors = parse_field_errors(str(exc))
+                return SaveResult(
+                    ok=False,
+                    message="Some values are not valid, so nothing was saved.",
+                    errors=field_errors,
+                )
 
-        backup = self._make_backup()
-        try:
-            self.replace(temp, self.env_file)
-        except OSError:
-            with contextlib.suppress(OSError):
-                temp.unlink()
-            log.warning("settings write failed; the original file was kept")
-            return SaveResult(
-                ok=False,
-                message="The settings file could not be replaced. The original is unchanged.",
-            )
+            backup = self._make_backup()
+            try:
+                self.replace(temp, self.env_file)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    temp.unlink()
+                log.warning("settings write failed; the original file was kept")
+                return SaveResult(
+                    ok=False,
+                    message="The settings file could not be replaced. The original is unchanged.",
+                )
 
-        self._last_save = now
+            self._last_save = now
+
         written = tuple(key for key in updates if key not in SECRET_KEYS)
         message = (
             "Saved. Changes apply the next time the bot starts; the practice replay uses "

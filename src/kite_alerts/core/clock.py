@@ -37,9 +37,9 @@ def to_ist(value: dt.datetime | pd.Timestamp | str) -> dt.datetime:
     """Return an IST-aware datetime. Naive input is *interpreted* as IST."""
     resolved: dt.datetime
     if isinstance(value, str):
-        resolved = pd.Timestamp(value).to_pydatetime()
+        resolved = pd.Timestamp(value).floor("us").to_pydatetime()
     elif isinstance(value, pd.Timestamp):
-        resolved = value.to_pydatetime()
+        resolved = value.floor("us").to_pydatetime()
     else:
         resolved = value
     if resolved.tzinfo is None:

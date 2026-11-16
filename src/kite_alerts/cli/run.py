@@ -186,6 +186,12 @@ def build_runtime(
     log_dir = settings.observability.log_dir
     audit = AuditLog(log_dir / "alerts-audit.jsonl")
     store = SqliteAlertStore(settings.db_path)
+    log.info(
+        "resolved paths: db=%s log_dir=%s cache_dir=%s",
+        settings.db_path,
+        log_dir,
+        settings.cache_dir,
+    )
 
     notifier_list = list(notifiers) if notifiers is not None else build_notifiers(settings.notify)
     if not notifier_list:

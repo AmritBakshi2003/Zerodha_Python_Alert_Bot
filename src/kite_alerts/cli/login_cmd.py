@@ -15,6 +15,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from ..config.env_file import env_write_lock
 from ..config.settings import load_settings
 from ..core.errors import ConfigError
 
@@ -30,24 +31,26 @@ def extract_request_token(value: str) -> str:
 
 def write_access_token(env_path: Path, token: str) -> None:
     """Update ``KITE_ACCESS_TOKEN`` in place, preserving comments and other keys."""
+    env_path = Path(env_path)
     env_path.parent.mkdir(parents=True, exist_ok=True)
-    lines: list[str] = []
-    if env_path.exists():
-        lines = env_path.read_text(encoding="utf-8").splitlines()
-    replaced = False
-    for index, line in enumerate(lines):
-        if line.strip().startswith("KITE_ACCESS_TOKEN="):
-            lines[index] = f"KITE_ACCESS_TOKEN={token}"
-            replaced = True
-            break
-    if not replaced:
-        lines.append(f"KITE_ACCESS_TOKEN={token}")
+    with env_write_lock(env_path):
+        lines: list[str] = []
+        if env_path.exists():
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+        replaced = False
+        for index, line in enumerate(lines):
+            if line.strip().startswith("KITE_ACCESS_TOKEN="):
+                lines[index] = f"KITE_ACCESS_TOKEN={token}"
+                replaced = True
+                break
+        if not replaced:
+            lines.append(f"KITE_ACCESS_TOKEN={token}")
 
-    temp = env_path.with_suffix(env_path.suffix + ".tmp")
-    temp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    with contextlib.suppress(OSError):  # pragma: no cover - Windows
-        os.chmod(temp, 0o600)
-    temp.replace(env_path)
+        temp = env_path.with_name(env_path.name + ".tmp")
+        temp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with contextlib.suppress(OSError):  # pragma: no cover - Windows
+            os.chmod(temp, 0o600)
+        temp.replace(env_path)
 
 
 def login(

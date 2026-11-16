@@ -19,6 +19,7 @@ None of this needs a secret or a network call.
 from __future__ import annotations
 
 import ipaddress
+import secrets
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Response
@@ -68,6 +69,47 @@ CROSS_SITE_MESSAGE = (
     "For safety, this action is only accepted from the dashboard's own page. "
     "Open the dashboard at http://127.0.0.1:8765 and try again."
 )
+
+CSRF_COOKIE_NAME = "kite_alerts_csrf"
+CSRF_HEADER_NAME = "X-Kite-Alerts-CSRF"
+
+CSRF_MISSING_MESSAGE = (
+    "This page's session token is missing or stale. Reload the dashboard page and try again."
+)
+CSRF_MISMATCH_MESSAGE = (
+    "This action requires the dashboard's session token. Reload the page and try again."
+)
+
+
+def _valid_csrf_token(value: str | None) -> bool:
+    return isinstance(value, str) and len(value) >= 16
+
+
+def csrf_token_for(request: Request, response: Response) -> str:
+    """Return the per-session CSRF token, issuing a cookie if one is absent."""
+    token = request.cookies.get(CSRF_COOKIE_NAME)
+    if not _valid_csrf_token(token):
+        token = secrets.token_urlsafe(32)
+        response.set_cookie(
+            CSRF_COOKIE_NAME,
+            token,
+            httponly=True,
+            samesite="strict",
+            path="/",
+        )
+    assert token is not None
+    return token
+
+
+def require_csrf_token(request: Request) -> None:
+    """Raise a plain-language 403 when the CSRF header does not match the cookie."""
+    cookie = request.cookies.get(CSRF_COOKIE_NAME)
+    if not _valid_csrf_token(cookie):
+        raise HTTPException(status_code=403, detail=CSRF_MISSING_MESSAGE)
+    assert cookie is not None
+    header = request.headers.get(CSRF_HEADER_NAME.lower())
+    if not header or not secrets.compare_digest(header, cookie):
+        raise HTTPException(status_code=403, detail=CSRF_MISMATCH_MESSAGE)
 
 
 def _strip_brackets(value: str) -> str:
