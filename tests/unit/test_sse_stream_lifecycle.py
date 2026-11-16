@@ -232,7 +232,16 @@ class TestStreamDisconnect:
 
 
 class TestNoThreadLeak:
-    def test_sequential_streams_reuse_the_executor(self, tmp_path: Path) -> None:
+    def test_sequential_streams_reuse_one_executor(self, tmp_path: Path) -> None:
+        """No per-stream threads: one loop executor, reused, never growing.
+
+        Deterministic on purpose: worker threads can linger in
+        ``threading.active_count()`` for a moment after their work returns, so
+        the assertion looks at the *executor's own bookkeeping* instead of OS
+        thread lifetimes — the identity of ``loop._default_executor`` and the
+        set of workers it has spawned.
+        """
+
         async def scenario() -> None:
             context = _context_for(tmp_path)
             app = create_app(context)
@@ -242,16 +251,20 @@ class TestNoThreadLeak:
                 await _first_event(socket)
                 await socket.disconnect()
                 await asyncio.wait_for(task, 5)
-            after_first_batch = threading.active_count()
+
+            loop = asyncio.get_running_loop()
+            executor = getattr(loop, "_default_executor", None)
+            assert executor is not None, "the stream must run SSEClient.get in the loop's executor"
+            workers = set(getattr(executor, "_threads", set()))
 
             for _ in range(3):
                 socket, task = await _start_stream(app)
                 await _first_event(socket)
                 await socket.disconnect()
                 await asyncio.wait_for(task, 5)
-            after_second_batch = threading.active_count()
 
-            message = "every stream leaked threads (executor workers must be reused)"
-            assert after_second_batch <= after_first_batch, message
+            message = "each stream must reuse the loop's one executor (no per-stream threads)"
+            assert getattr(loop, "_default_executor", None) is executor, message
+            assert set(getattr(executor, "_threads", set())) == workers, message
 
         asyncio.run(scenario())
