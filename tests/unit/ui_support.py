@@ -30,6 +30,44 @@ from kite_alerts.ui.history import AlertHistoryReader
 from kite_alerts.ui.status import StatusService
 from kite_alerts.ui.test_alert import TestAlertService
 
+
+class DashboardClient(TestClient):
+    """TestClient that behaves like the dashboard's own page.
+
+    The dashboard's frontend fetches a CSRF token on page load and sends it on
+    every mutation. This client mirrors that so existing mutation tests keep
+    exercising the same-origin logic without each one re-implementing the token
+    handshake. Tests that want to prove the 403 path use ``TestClient`` directly.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._csrf_token: str | None = None
+        self._csrf_loaded: bool = False
+
+    def _load_csrf(self) -> str:
+        if not self._csrf_loaded:
+            self._csrf_loaded = True
+            try:
+                response = self.get("/api/about")
+                if response.status_code == 200:
+                    token = response.json().get("csrf_token")
+                    if isinstance(token, str) and token:
+                        self._csrf_token = token
+            except Exception:  # pragma: no cover - defensive
+                self._csrf_token = None
+        return self._csrf_token or ""
+
+    def request(self, method: str, url: Any, **kwargs: Any) -> Any:
+        if str(method).upper() not in ("GET", "HEAD", "OPTIONS"):
+            token = self._load_csrf()
+            if token:
+                headers = dict(kwargs.get("headers") or {})
+                headers.setdefault("X-Kite-Alerts-CSRF", token)
+                kwargs["headers"] = headers
+        return super().request(method, url, **kwargs)
+
+
 BASE_URL = "http://127.0.0.1:8765"
 TODAY = "2026-11-16"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -180,8 +218,8 @@ def _default_clock() -> FixedClock:
     return FixedClock()
 
 
-def make_client(context: UiContext, *, base_url: str = BASE_URL) -> TestClient:
-    return TestClient(create_app(context), base_url=base_url)
+def make_client(context: UiContext, *, base_url: str = BASE_URL) -> DashboardClient:
+    return DashboardClient(create_app(context), base_url=base_url)
 
 
 __all__ = [
