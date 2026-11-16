@@ -344,9 +344,13 @@ class TestClock:
         assert monday_open["countdown_seconds"] > 0
         assert monday_open["next_event"] == "Closes"
 
-        preopen = service.market_clock(dt.datetime(2026, 11, 16, 8, 0, tzinfo=IST))
+        early = service.market_clock(dt.datetime(2026, 11, 16, 8, 0, tzinfo=IST))
+        assert early["state"] == "closed"
+        assert early["next_event"] == "Opens"
+
+        preopen = service.market_clock(dt.datetime(2026, 11, 16, 9, 5, tzinfo=IST))
         assert preopen["state"] == "pre-open"
-        assert preopen["next_event"] == "Opens"
+        assert preopen["pre_open_phase"] == "entry"
 
         weekend = service.market_clock(dt.datetime(2026, 11, 15, 10, 30, tzinfo=IST))
         assert weekend["state"] == "weekend"

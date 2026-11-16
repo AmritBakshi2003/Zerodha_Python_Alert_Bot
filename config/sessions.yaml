@@ -1,0 +1,18 @@
+# Dated NSE session overrides (optional).
+#
+# Normal weekdays trade 09:15-15:30 IST. A date listed here replaces that window
+# for that day only and trades even if it is a Saturday or a configured holiday
+# (muhurat trading, special live sessions).
+#
+# The bot never invents these dates: add them from the official NSE circular.
+#
+#   special_sessions:
+#     - date: 2026-11-08
+#       open: "18:15"
+#       close: "19:15"
+#       label: Muhurat trading
+#
+# Validation (each entry needs date, open and close):
+#   * open must be before close
+#   * a date may appear only once
+special_sessions: []

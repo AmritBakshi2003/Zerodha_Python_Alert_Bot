@@ -21,7 +21,7 @@ import pandas as pd
 
 from ...config.defaults import RULE_IDS
 from ...config.settings import Settings, StrategyParams
-from ...core.calendar import SessionWindow, TradingCalendar, calendar_from_config
+from ...core.calendar import TradingCalendar, calendar_from_config
 from ...core.clock import IST, SystemClock, to_ist
 from ...indicators import ema, macd, opening_range, rsi
 from ...strategy.evaluator import evaluate
@@ -322,6 +322,9 @@ class ChartService:
                 open_value=settings.session.open_time,
                 close_value=settings.session.close_time,
                 holiday_file=settings.session.holiday_file,
+                special_sessions_file=settings.session.special_sessions_file,
+                pre_open_value=settings.session.pre_open_time,
+                closing_value=settings.session.closing_end,
             )
         self._calendar_cache = (key, calendar)
         return calendar
@@ -499,51 +502,51 @@ class ChartService:
         }
 
     def market_clock(self, now: dt.datetime | None = None) -> dict[str, Any]:
+        """The dashboard clock, rendered entirely from ``session_info`` (F4)."""
         settings = self.settings_provider()
         calendar = self._calendar(settings)
         moment = to_ist(now or self.clock.now())
-        window: SessionWindow = calendar.window
-        day = moment.date()
-        if calendar.is_holiday(day):
-            state = "holiday"
-            label = "Closed — holiday"
-            notice = "NSE is closed today for a configured holiday."
-        elif calendar.is_weekend(day):
-            state = "weekend"
-            label = "Closed — weekend"
-            notice = "NSE is closed for the weekend."
-        elif moment.time() < window.open_time:
-            state = "pre-open"
-            label = "Pre-open"
-            notice = ""
-        elif moment.time() <= window.close_time:
-            state = "open"
-            label = "Open"
-            notice = ""
-        else:
-            state = "closed"
-            label = "Closed"
-            notice = "NSE has closed for today."
+        info = calendar.session_info(moment)
 
-        if state == "open":
-            target = pd.Timestamp(dt.datetime.combine(day, window.close_time, IST))
+        if info.tradable and info.closes_at:
+            target = pd.Timestamp(info.closes_at)
             event = "Closes"
         else:
-            target = calendar.next_open(moment)
+            target = pd.Timestamp(info.opens_at) if info.opens_at else calendar.next_open(moment)
             event = "Opens"
         seconds = max(0, int((target - moment).total_seconds()))
+
+        payload = info.as_dict()
+        payload.update(
+            {
+                "notice": "" if info.tradable else info.detail,
+                "next_event": event,
+                "next_event_at": target.strftime("%Y-%m-%d %H:%M"),
+                "countdown_seconds": seconds,
+                "holiday": calendar.is_holiday(moment.date()),
+            }
+        )
+        return payload
+
+    def holiday_summary(self, today: dt.date | None = None) -> dict[str, Any]:
+        """What /api/about shows about the configured calendar (F3)."""
+        calendar = self._calendar(self.settings_provider())
+        day = today or to_ist(self.clock.now()).date()
         return {
-            "state": state,
-            "label": label,
-            "is_open": state == "open",
-            "notice": notice,
-            "session_open": window.open_time.strftime("%H:%M"),
-            "session_close": window.close_time.strftime("%H:%M"),
-            "now_ist": moment.strftime("%H:%M:%S"),
-            "next_event": event,
-            "next_event_at": target.strftime("%Y-%m-%d %H:%M"),
-            "countdown_seconds": seconds,
-            "holiday": calendar.is_holiday(day),
+            "count": len(calendar.holiday_dates),
+            "source": calendar.source,
+            "year": day.year,
+            "dates": sorted(d.isoformat() for d in calendar.holiday_dates if d.year == day.year),
+            "warnings": calendar.holiday_warnings(day),
+            "special_sessions": [
+                {
+                    "date": session.day.isoformat(),
+                    "open": session.open_time.strftime("%H:%M"),
+                    "close": session.close_time.strftime("%H:%M"),
+                    "label": session.label,
+                }
+                for session in calendar.configured_special_sessions
+            ],
         }
 
     def clock_payload(self) -> dict[str, Any]:

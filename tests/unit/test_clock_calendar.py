@@ -89,7 +89,9 @@ class TestCalendar:
 
     def test_pre_open_and_post_close(self, calendar: TradingCalendar) -> None:
         assert calendar.describe(to_ist_ts("2026-11-16 09:05")) == "pre-open"
-        assert calendar.describe(to_ist_ts("2026-11-16 15:31")) == "post-close"
+        # F4: 15:31 is the closing window; 01:40 is not "pre-open" any more.
+        assert calendar.describe(to_ist_ts("2026-11-16 15:31")) == "closing"
+        assert calendar.describe(to_ist_ts("2026-11-16 01:40")) == "closed"
         assert not calendar.in_session(to_ist_ts("2026-11-16 09:05"))
 
     def test_holiday(self, calendar: TradingCalendar, tmp_path) -> None:

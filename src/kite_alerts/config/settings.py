@@ -21,7 +21,7 @@ from typing import Any, Literal
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, model_validator
 
-from ..core.calendar import SessionWindow
+from ..core.calendar import SessionWindow, parse_hhmm
 from ..core.errors import ConfigError
 from .defaults import RULE_ENV_PREFIX, RULE_IDS, SESSION_MINUTES
 
@@ -301,11 +301,20 @@ class SessionSettings(BaseModel):
 
     open_time: str = "09:15"
     close_time: str = "15:30"
+    pre_open_time: str = "09:00"
+    closing_end: str = "16:00"
     holiday_file: Path | None = None
+    special_sessions_file: Path | None = None
 
     @model_validator(mode="after")
     def _validate_window(self) -> SessionSettings:
-        SessionWindow.parse(self.open_time, self.close_time)  # raises ConfigError
+        window = SessionWindow.parse(self.open_time, self.close_time)  # raises ConfigError
+        pre_open = parse_hhmm(self.pre_open_time)
+        closing = parse_hhmm(self.closing_end)
+        if pre_open >= window.open_time:
+            raise ValueError("SESSION_PRE_OPEN must be before SESSION_OPEN")
+        if closing <= window.close_time:
+            raise ValueError("SESSION_CLOSING_END must be after SESSION_CLOSE")
         return self
 
     def window(self) -> SessionWindow:
@@ -538,7 +547,10 @@ def _build(env: _Env) -> dict[str, Any]:
         "session": SessionSettings(
             open_time=env.text("SESSION_OPEN", "09:15"),
             close_time=env.text("SESSION_CLOSE", "15:30"),
+            pre_open_time=env.text("SESSION_PRE_OPEN", "09:00"),
+            closing_end=env.text("SESSION_CLOSING_END", "16:00"),
             holiday_file=env.path("HOLIDAY_FILE", "config/holidays.yaml"),
+            special_sessions_file=env.path("SPECIAL_SESSIONS_FILE", "config/sessions.yaml"),
         ),
         "resilience": ResilienceSettings(
             history_rate_limit_per_sec=env.number("HISTORY_RATE_LIMIT_PER_SEC", 3.0),
