@@ -1,0 +1,14 @@
+# One checkout, one set of line endings.
+#
+# The demo writes LF and the committed golden file is LF, but the Git for Windows
+# default (core.autocrlf=true) presented demo_output.txt as CRLF in the working
+# tree, so a raw `diff` failed even though the output was correct. Pinning
+# eol=lf here makes every platform match the index and CI.
+* text=auto eol=lf
+
+# Screenshots and icons must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary

@@ -206,7 +206,9 @@ class ChartService:
     rate_limit_per_minute: int = 300
     _calls: deque[float] = field(default_factory=deque, init=False)
     _watch_cache: tuple[str, float, dict[str, Any]] | None = field(default=None, init=False)
-    _calendar_cache: tuple[int, TradingCalendar] | None = field(default=None, init=False)
+    _calendar_cache: tuple[tuple[object, ...], TradingCalendar] | None = field(
+        default=None, init=False
+    )
 
     # --------------------------------------------------------------- validation
     def source(self, source_id: str) -> ChartSource:
@@ -315,7 +317,7 @@ class ChartService:
         return settings.params if settings is not None else StrategyParams()
 
     def _calendar(self, settings: Settings | None) -> TradingCalendar:
-        key = id(settings)
+        key = self._calendar_key(settings)
         if self._calendar_cache is not None and self._calendar_cache[0] == key:
             return self._calendar_cache[1]
         if settings is None:
@@ -331,6 +333,37 @@ class ChartService:
             )
         self._calendar_cache = (key, calendar)
         return calendar
+
+    def _calendar_key(self, settings: Settings | None) -> tuple[object, ...]:
+        """Cache by the values that build the calendar, never by ``id(settings)``.
+
+        ``id`` is only unique among live objects: a reloaded ``Settings`` can reuse
+        a freed address and silently keep the old session window (F25). Stamping
+        the YAML files also means editing ``holidays.yaml`` is picked up without a
+        restart.
+        """
+        if settings is None:
+            return ("default",)
+        session = settings.session
+        return (
+            session.open_time,
+            session.close_time,
+            session.pre_open_time,
+            session.closing_end,
+            self._file_stamp(session.holiday_file),
+            self._file_stamp(session.special_sessions_file),
+        )
+
+    @staticmethod
+    def _file_stamp(path: Path | None) -> tuple[str, int, int]:
+        if path is None:
+            return ("", 0, 0)
+        try:
+            resolved = str(path.expanduser().resolve())
+            stat = path.stat()
+        except OSError:
+            return (str(path), -1, -1)
+        return (resolved, stat.st_mtime_ns, stat.st_size)
 
     def candles(
         self,

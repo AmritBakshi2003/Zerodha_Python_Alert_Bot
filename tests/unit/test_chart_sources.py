@@ -360,7 +360,9 @@ class TestClock:
 
         assert context.settings is not None
         calendar = TradingCalendar(holidays=[dt.date(2026, 11, 16)])
-        service._calendar_cache = (id(context.settings), calendar)
+        # F25 changed the key from id(settings) to the session values, so inject
+        # the test calendar under the key the service now computes.
+        service._calendar_cache = (service._calendar_key(context.settings), calendar)
         holiday = service.market_clock(dt.datetime(2026, 11, 16, 10, 30, tzinfo=IST))
         assert holiday["state"] == "holiday"
         assert "holiday" in holiday["notice"].lower()

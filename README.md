@@ -15,7 +15,7 @@ order-side method names, and `.pre-commit-config.yaml` runs it on every commit.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10–3.14 (CI tests 3.13/3.14 as non-blocking until they are proven; the app itself runs on all five)
 - A Kite Connect app (API key + secret) with a paid **historical data** subscription
 - One or more alert channels: console, Telegram, Slack or SMTP
 
