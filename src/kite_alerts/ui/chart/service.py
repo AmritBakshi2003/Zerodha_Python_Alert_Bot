@@ -209,7 +209,10 @@ class ChartService:
     clock: SystemClock = field(default_factory=SystemClock)
     rate_limit_per_minute: int = 300
     _calls: deque[float] = field(default_factory=deque, init=False)
-    _watchlist_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    #: Re-entrant: add/remove hold it while calling _read_extras/_write_extras.
+    _watchlist_lock: threading.RLock = field(
+        default_factory=threading.RLock, init=False, repr=False
+    )
     _watch_cache: tuple[str, float, dict[str, Any]] | None = field(default=None, init=False)
     _calendar_cache: tuple[int, TradingCalendar] | None = field(default=None, init=False)
 
@@ -570,23 +573,26 @@ class ChartService:
 
     # ---------------------------------------------------------------- watchlist
     def _read_extras(self) -> dict[str, list[str]]:
-        try:
-            raw = json.loads(self.watchlist_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            return {}
-        symbols = raw.get("symbols") if isinstance(raw, dict) else None
-        if not isinstance(symbols, dict):
-            return {}
-        result: dict[str, list[str]] = {}
-        for source_id, values in symbols.items():
-            if source_id not in self.sources or not isinstance(values, list):
-                continue
-            result[source_id] = [
-                str(value).strip().upper()
-                for value in values
-                if isinstance(value, str) and is_safe_symbol(value)
-            ][:WATCHLIST_LIMIT]
-        return result
+        # Readers share the writer lock: on Windows os.replace fails with
+        # "Access is denied" if another thread has the file open (F21).
+        with self._watchlist_lock:
+            try:
+                raw = json.loads(self.watchlist_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                return {}
+            symbols = raw.get("symbols") if isinstance(raw, dict) else None
+            if not isinstance(symbols, dict):
+                return {}
+            result: dict[str, list[str]] = {}
+            for source_id, values in symbols.items():
+                if source_id not in self.sources or not isinstance(values, list):
+                    continue
+                result[source_id] = [
+                    str(value).strip().upper()
+                    for value in values
+                    if isinstance(value, str) and is_safe_symbol(value)
+                ][:WATCHLIST_LIMIT]
+            return result
 
     def _write_extras(self, extras: dict[str, list[str]]) -> None:
         path = self.watchlist_path

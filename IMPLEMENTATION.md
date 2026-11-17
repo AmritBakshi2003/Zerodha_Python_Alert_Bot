@@ -721,7 +721,12 @@ stray temp files.
 
 **Landed (P2b).** `ChartService` now has `_watchlist_lock` around the whole
 read-modify-write, and `_write_extras` uses `chart_watchlist.json.<pid>.<uuid4>.tmp`,
-removing it if the write fails. Two tests fail on `bf7fb25`:
+removing it if the write fails. A first fix that locked only the writers still failed
+the full suite: a **reader** (`watchlist()` → `_read_extras`) could hold the file open
+while another thread's `os.replace` ran, which Windows rejects with
+`PermissionError(13, "Access is denied")`. The lock is therefore a `RLock` taken by both
+`_read_extras` and the add/remove read-modify-write (the RLock because add/remove already
+hold it when they call `_read_extras`). Two tests fail on `bf7fb25`:
 
 * `test_temp_file_name_is_unique_per_writer` — both writers used
   `chart_watchlist.json.tmp`;
@@ -1303,8 +1308,10 @@ a one-release "warn-only" mode if needed. Rollback: revert the branch.
 
 ### P2b — concurrency hardening (F21 + F22)
 
-1. `ChartService`: one lock around the watchlist read-modify-write; per-writer temp
-   names (`pid` + `uuid4`); remove the temp file if the write fails.
+1. `ChartService`: one re-entrant lock around the watchlist read-modify-write **and**
+   the reads (Windows: a reader holding the file open makes another thread's
+   `os.replace` fail with "Access is denied"); per-writer temp names (`pid` +
+   `uuid4`); remove the temp file if the write fails.
 2. `LiveFeedService`: move `_last_push` into the existing tick lock; take `_lock` for
    `_bootstrap_data` writes and return a copy from `bootstrap_data_for`; document
    `_lock → _sse_lock → builder._lock`.
