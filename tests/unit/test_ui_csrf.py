@@ -114,3 +114,11 @@ class TestCsrf:
         )
         assert "X-Kite-Alerts-CSRF" in source
         assert 'meta[name="kite-alerts-csrf"]' in source
+
+    def test_curl_handshake_is_documented(self) -> None:
+        """F6 acceptance: the non-browser path has to be written down."""
+        from unit.ui_support import REPO_ROOT
+
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        assert "/api/about" in readme
+        assert "X-Kite-Alerts-CSRF" in readme

@@ -39,7 +39,7 @@ The project is built on strict design principles that must be maintained across 
   - `Open Interest (OI)`: Analyzes price vs open interest deltas to identify long buildup, short covering, short buildup, and long unwinding.
 - **Resilient Delivery (`NotifierHub`)**:
   - Non-blocking in-memory queue delivering to Console, Telegram, Slack, and SMTP.
-  - Bounded queue (`NOTIFY_QUEUE_MAX`, default 5 000): on overflow the oldest system message is evicted first, then the oldest alert, so the newest alerts survive; every drop is counted (`notifier_dropped_total`) and logged.
+  - Bounded queue (`NOTIFY_QUEUE_MAX`, default 5 000): a full queue drops incoming status text, while alerts evict the oldest system message then the oldest alert, so the newest alerts survive. Every drop is counted (`notifier_dropped_total`) and logged; dropped alerts are also written to the dead-letter log.
   - Per-channel `TokenBucket` rate-limit enforcement and exponential backoff retry with jitter.
   - Duplicate message suppression via TTL dedup keys.
   - Dead Letter Queue (`logs/dead-letter.jsonl`) preserving delivery failures with diagnostic context.

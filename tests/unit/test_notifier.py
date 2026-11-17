@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import smtplib
+import threading
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -418,9 +419,7 @@ class TestQueueBound:
         notifier = RecordingNotifier()
         hub, metrics, _ = make_hub([notifier], tmp_path, queue_max=3, dedup_seconds=0)
         for i in range(10):
-            hub.submit(
-                self._alert(f"2026-11-16 10:0{i % 9}:00" if False else f"2026-11-16 10:{i:02d}")
-            )
+            hub.submit(self._alert(f"2026-11-16 10:{i:02d}"))
         assert hub.queue_depth <= 3
         assert hub.dropped >= 7
         assert metrics.get("notifier_dropped_total") >= 7
@@ -454,7 +453,93 @@ class TestQueueBound:
             hub.close()
         delivered = [m.text for m in notifier.messages]
         assert len(delivered) == 2
-        assert all("10:0" in t or True for t in delivered)
+        # The newest two alerts survived; the oldest was evicted.
+        assert "10:01" in delivered[0]
+        assert "10:02" in delivered[1]
+
+    def test_full_queue_drops_incoming_system_message(self, tmp_path: Path) -> None:
+        """Ephemeral system text must never evict an alert (F18 policy)."""
+        notifier = RecordingNotifier()
+        hub, metrics, _ = make_hub([notifier], tmp_path, queue_max=2, dedup_seconds=0)
+        hub.submit(self._alert("2026-11-16 10:00"))
+        hub.submit(self._alert("2026-11-16 10:01"))
+        assert hub.queue_depth == 2
+
+        hub.send_text("heartbeat", level="system")
+
+        assert hub.queue_depth == 2
+        assert hub.dropped == 1
+        assert metrics.get("notifier_dropped_total") == 1
+        hub.start()
+        try:
+            assert hub.flush(timeout=5)
+        finally:
+            hub.close()
+        assert [m.level for m in notifier.messages] == ["alert", "alert"]
+
+    def test_backlog_does_not_grow_unbounded(self, tmp_path: Path) -> None:
+        """A 2k-alert burst against a stalled channel stays bounded and is counted."""
+        release = threading.Event()
+
+        class BlockingNotifier:
+            name = "blocking"
+
+            def __init__(self) -> None:
+                self.entered = threading.Event()
+                self.messages: list[Message] = []
+
+            def send(self, message: Message) -> None:
+                self.entered.set()
+                # No timeout: the test releases this in a finally block, so it can
+                # never hang, and a slow machine cannot turn this into a failure.
+                release.wait()
+                self.messages.append(message)
+
+            def close(self) -> None:
+                release.set()
+
+        notifier = BlockingNotifier()
+        hub, metrics, dlq = make_hub([notifier], tmp_path, queue_max=50, dedup_seconds=0)
+        hub.start()
+        try:
+            hub.submit(self._alert("2026-11-16 10:00"))
+            # The worker has taken the first alert and is now blocked.
+            assert notifier.entered.wait(timeout=5)
+            burst = 2_000
+            for i in range(burst):
+                minute = i % 60
+                hour = 10 + (i // 60) % 6
+                hub.submit(self._alert(f"2026-11-16 {hour:02d}:{minute:02d}"))
+            assert hub.queue_depth <= 50
+            assert hub.dropped == burst - 50
+            assert metrics.get("notifier_dropped_total") == hub.dropped
+            # Every dropped alert is recoverable from the dead-letter log.
+            assert dlq.count == hub.dropped
+            release.set()
+            assert hub.flush(timeout=20)
+        finally:
+            release.set()
+            hub.close()
+        # Exactly the first alert plus the bounded backlog reached the channel.
+        assert len(notifier.messages) == 51
+
+    def test_overflow_records_evicted_alert_in_dead_letter_log(self, tmp_path: Path) -> None:
+        """A dropped alert is recoverable, not silent (F18 acceptance)."""
+        notifier = RecordingNotifier()
+        hub, _, dlq = make_hub([notifier], tmp_path, queue_max=1, dedup_seconds=0)
+        hub.submit(self._alert("2026-11-16 10:00"))
+        hub.submit(self._alert("2026-11-16 10:01"))
+
+        assert hub.dropped == 1
+        assert dlq.count == 1
+        record = dlq.tail(1)[0]
+        assert record["channel"] == "queue-overflow"
+        assert "BUY" in record["text"]
+        assert hub.health()["dead_letters"] == 1
+
+
+class TestRedaction:
+    def test_redact_removes_tokens_and_webhooks(self) -> None:
         text = f"url https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage and https://hooks.slack.com/services/T/B/X"
         cleaned = redact(text)
         assert TELEGRAM_URL_PART not in cleaned

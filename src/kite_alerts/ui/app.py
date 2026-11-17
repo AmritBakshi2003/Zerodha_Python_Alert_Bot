@@ -33,7 +33,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import secrets
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -71,10 +70,11 @@ from .kite_connect import (
 )
 from .notifications import TelegramSetupService
 from .security import (
-    CSRF_COOKIE_NAME,
     SecurityMiddleware,
     require_csrf_token,
     require_same_origin,
+    resolve_csrf,
+    set_csrf_cookie,
 )
 from .settings_schema import connect_payload, settings_payload
 from .settings_store import SettingsStore
@@ -440,13 +440,7 @@ def create_app(context: UiContext) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def index(request: Request) -> Response:
-        existing = request.cookies.get(CSRF_COOKIE_NAME)
-        if not existing or len(existing) < 16:
-            token = secrets.token_urlsafe(32)
-            issued: str | None = token
-        else:
-            token = existing
-            issued = None
+        token, issued = resolve_csrf(request)
         html = INDEX_HTML
         if "</head>" in html:
             html = html.replace(
@@ -455,10 +449,8 @@ def create_app(context: UiContext) -> FastAPI:
                 1,
             )
         response = HTMLResponse(html, media_type="text/html; charset=utf-8")
-        if issued is not None:
-            response.set_cookie(
-                CSRF_COOKIE_NAME, issued, httponly=True, samesite="strict", path="/"
-            )
+        if issued:
+            set_csrf_cookie(response, token)
         return response
 
     @app.get("/license", include_in_schema=False)
@@ -473,10 +465,9 @@ def create_app(context: UiContext) -> FastAPI:
     def about(request: Request, response: Response) -> dict[str, Any]:
         holidays = context.chart.holiday_summary() if context.chart is not None else None
         settings = context.settings
-        token = request.cookies.get(CSRF_COOKIE_NAME)
-        if not token or len(token) < 16:
-            token = secrets.token_urlsafe(32)
-            response.set_cookie(CSRF_COOKIE_NAME, token, httponly=True, samesite="strict", path="/")
+        token, issued = resolve_csrf(request)
+        if issued:
+            set_csrf_cookie(response, token)
         payload = {
             "version": context.version,
             "mode": MODE,

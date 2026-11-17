@@ -10,11 +10,13 @@ Design rules that make a failing channel harmless to the data path:
   provider's own ``retry_after``.
 * Duplicate messages (same dedup key within a TTL) are dropped.
 * Final failures are written to the dead-letter log and counted - never silent.
-* The queue is bounded (``NOTIFY_QUEUE_MAX``, default 5 000). On overflow the
-  oldest system message is evicted first, then the oldest alert, so the newest
-  alerts survive; ephemeral system messages are dropped outright. Every drop is
-  counted (``notifier_dropped_total``) and logged. The policy mirrors the tick
-  queue's drop-and-count behaviour in ``engine/worker.py``.
+* The queue is bounded (``NOTIFY_QUEUE_MAX``, default 5 000). An incoming
+  system/info message is dropped when the queue is full; an alert evicts the
+  oldest system message first, then the oldest alert, so the newest alerts
+  survive. Every drop is counted (``notifier_dropped_total``) and logged, and an
+  evicted alert is written to the dead-letter log (channel ``queue-overflow``).
+  The policy mirrors the tick queue's drop-and-count behaviour in
+  ``engine/worker.py``.
 """
 
 from __future__ import annotations
@@ -158,68 +160,95 @@ class NotifierHub:
         """Enqueue ``item`` (a Message or the ``_STOP`` sentinel) without blocking.
 
         The queue is bounded (``NOTIFY_QUEUE_MAX``). On overflow:
-        * a ``system``/``info`` message is dropped immediately (ephemeral);
-        * an ``alert`` evicts the oldest system-level message if one exists,
-          otherwise the oldest alert, so the newest alerts survive;
+        * an incoming ``system``/``info`` message is dropped immediately; a
+          status line never displaces a real alert;
+        * an incoming ``alert`` evicts the oldest system-level message if one
+          exists, otherwise the oldest alert, so the newest alerts survive;
+        * every evicted alert is written to the dead-letter log (channel
+          ``queue-overflow``) so a drop is recoverable;
         * the ``_STOP`` sentinel is always enqueued (evicting one message if
           needed) so ``close()`` cannot deadlock on a full queue.
 
         Every drop is counted (``notifier_dropped_total``) and logged.
+
+        The decision and the enqueue happen under the queue's own mutex, so a
+        consumer that frees a slot between "is it full?" and "make room" cannot
+        cost us an extra alert: ``put_nowait`` raising ``Full`` and then evicting
+        would otherwise drop a message the consumer had already made room for.
         """
         q = self._queue
-        while True:
-            try:
-                q.put_nowait(item)
-                return
-            except queue.Full:
-                if not self._evict_one(item):
-                    self._count_drop(item if isinstance(item, Message) else None)
-                    return
-
-    def _evict_one(self, item: object) -> bool:
-        """Remove one victim from the full queue to make room. Return True on success."""
-        q = self._queue
+        victim: Message | None = None
+        drop_incoming = False
         with q.mutex:
-            entries = q.queue  # underlying deque, guarded by q.mutex
-            if not entries:
-                return False
-            # Prefer evicting the oldest system/info message (never _STOP).
-            victim_index: int | None = None
+            if q.maxsize > 0 and len(q.queue) >= q.maxsize:
+                if isinstance(item, Message) and item.level != "alert":
+                    drop_incoming = True
+                else:
+                    victim = self._pop_victim()
+                    if victim is None:
+                        drop_incoming = True
+            if not drop_incoming:
+                q.queue.append(item)
+                q.unfinished_tasks += 1
+                q.not_empty.notify()
+        # Bookkeeping (a dead-letter file write) happens outside the mutex so the
+        # worker thread is never blocked behind the producer's disk I/O.
+        if victim is not None:
+            self._record_drop(victim, incoming=False)
+        elif drop_incoming:
+            self._count_drop(item if isinstance(item, Message) else None)
+
+    def _pop_victim(self) -> Message | None:
+        """Remove one victim from the full queue. Caller must hold ``q.mutex``."""
+        q = self._queue
+        entries = q.queue  # underlying deque, guarded by q.mutex
+        # Prefer evicting the oldest system/info message (never _STOP).
+        victim_index: int | None = None
+        for index, queued in enumerate(entries):
+            if queued is _STOP:
+                continue
+            if isinstance(queued, Message) and queued.level != "alert":
+                victim_index = index
+                break
+        if victim_index is None:
+            # No system message: evict the oldest non-_STOP entry.
             for index, queued in enumerate(entries):
-                if queued is _STOP:
-                    continue
-                if isinstance(queued, Message) and queued.level != "alert":
+                if queued is not _STOP:
                     victim_index = index
                     break
-            if victim_index is None:
-                # No system message: evict the oldest non-_STOP entry.
-                for index, queued in enumerate(entries):
-                    if queued is not _STOP:
-                        victim_index = index
-                        break
-            if victim_index is None:
-                # Queue holds only _STOP (shouldn't happen); drop incoming instead.
-                return False
-            victim = entries[victim_index]
-            del entries[victim_index]
-            # The victim was never gotten, so task_done() will never be called.
-            q.unfinished_tasks = max(0, q.unfinished_tasks - 1)
-            if isinstance(victim, Message):
-                self._dropped += 1
-                metric(self._metrics, "notifier_dropped_total")
-                log.warning(
-                    "notifier queue full (%d); dropped oldest %s message",
-                    self._settings.queue_max,
-                    victim.level,
-                )
-            return True
+        if victim_index is None:
+            # Queue holds only _STOP (shouldn't happen); drop incoming instead.
+            return None
+        victim = entries[victim_index]
+        del entries[victim_index]
+        # The victim was never gotten, so task_done() will never be called.
+        q.unfinished_tasks = max(0, q.unfinished_tasks - 1)
+        return victim if isinstance(victim, Message) else None
 
     def _count_drop(self, message: Message | None) -> None:
+        if message is None:
+            self._dropped += 1
+            metric(self._metrics, "notifier_dropped_total")
+            log.warning("notifier queue full (%d); dropped an item", self._settings.queue_max)
+            return
+        self._record_drop(message, incoming=True)
+
+    def _record_drop(self, message: Message, *, incoming: bool) -> None:
         self._dropped += 1
-        level = message.level if message is not None else "unknown"
         metric(self._metrics, "notifier_dropped_total")
+        if message.level == "alert":
+            # No alert disappears without a recoverable copy (F18 acceptance).
+            self._dlq.record(
+                channel="queue-overflow",
+                message=message,
+                error=f"notifier queue full (NOTIFY_QUEUE_MAX={self._settings.queue_max})",
+                attempts=0,
+            )
         log.warning(
-            "notifier queue full (%d); dropped incoming %s message", self._settings.queue_max, level
+            "notifier queue full (%d); dropped %s %s message",
+            self._settings.queue_max,
+            "incoming" if incoming else "oldest",
+            message.level,
         )
 
     def _dedup_ok(self, key: str) -> bool:
