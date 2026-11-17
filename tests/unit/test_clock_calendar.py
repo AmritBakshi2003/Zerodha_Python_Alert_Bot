@@ -140,6 +140,12 @@ class TestHolidayLoading:
         with pytest.raises(ConfigError, match="not a date"):
             load_holidays(path)
 
+    def test_invalid_yaml_raises(self, tmp_path) -> None:
+        path = tmp_path / "h.yaml"
+        path.write_text("holidays: [unclosed\n", encoding="utf-8")
+        with pytest.raises(ConfigError, match="YAML"):
+            load_holidays(path)
+
 
 class TestNanosecondConversion:
     def test_nanosecond_timestamps_do_not_raise_userwarning(self) -> None:
