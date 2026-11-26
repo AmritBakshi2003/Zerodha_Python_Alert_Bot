@@ -47,6 +47,9 @@ clean (82 source files), and `tests/test_alerts_only.py` green.
 | F21 watchlist write race | not started (**assigned to P2b**) | — |
 | F22 unsynchronised shared dicts | not started (**assigned to P2b**) | — |
 | F23 golden-file line endings | **DONE** (P3, this branch) | `.gitattributes` |
+| F21 watchlist write race | **DONE** (P2b, this branch) | `ui/chart/service.py` |
+| F22 unsynchronised shared dicts | **DONE** (P2b, this branch; `_registry` was already locked, finding corrected) | `ui/live_feed.py` |
+| F23 golden-file line endings | not started (**assigned to P3**) | — |
 | F24 backoff constants unused | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F25 calendar cache by identity | **DONE** (P3, this branch) | `ui/chart/service.py` |
 | F26 `.env` read-modify-write race | **DONE** (P2, PR #22) | `config/env_file.py` |
@@ -776,23 +779,46 @@ read-modify-write on the whole file. Two concurrent requests share the same temp
 **Fix design.** A single `threading.Lock` in `ChartService` around read-modify-write, and a
 temp name that includes `os.getpid()`+`uuid4` to avoid collisions.
 
-**Tests.** `test_concurrent_adds_keep_every_symbol` (barrier + 20 threads), `test_temp_file_
-name_is_unique_per_writer`.
+**Tests.** `test_concurrent_adds_keep_every_symbol` (barrier + all 10 slots),
+`test_temp_file_name_is_unique_per_writer`.
 
-**Acceptance.** 20 concurrent adds yield 20 symbols, file parses, no stray temp files.
+**Acceptance.** Every concurrent add within `WATCHLIST_LIMIT` survives, file parses, no
+stray temp files.
 
 **Risk / rollback.** Local; revert.
+
+**Landed (P2b).** `ChartService` now has `_watchlist_lock` around the whole
+read-modify-write, and `_write_extras` uses `chart_watchlist.json.<pid>.<uuid4>.tmp`,
+removing it if the write fails. A first fix that locked only the writers still failed
+the full suite: a **reader** (`watchlist()` → `_read_extras`) could hold the file open
+while another thread's `os.replace` ran, which Windows rejects with
+`PermissionError(13, "Access is denied")`. The lock is therefore a `RLock` taken by both
+`_read_extras` and the add/remove read-modify-write (the RLock because add/remove already
+hold it when they call `_read_extras`). Two tests fail on `bf7fb25`:
+
+* `test_temp_file_name_is_unique_per_writer` — both writers used
+  `chart_watchlist.json.tmp`;
+* `test_concurrent_adds_keep_every_symbol` — on Windows the shared temp name made
+  concurrent adds fail with `PermissionError(13, "The process cannot access the file
+  because it is being used by another process")`, i.e. the dashboard returned 500s.
+
+The plan's "20 threads / 20 symbols" was wrong: `WATCHLIST_LIMIT` caps the user list at
+10, so the test drives the 10 legal slots and asserts the file contains all of them.
 
 ### 2.22 F22 — LOW — unsynchronised shared dicts in the feed
 
 **Evidence.** `_last_push` (`live_feed.py`, written in `_handle_tick` from the ticker
 thread and read on the same path), `_bootstrap_data` (written by bootstrap threads,
 read by request threads via `bootstrap_data_for`), and `_registry` (written inside
-`subscribe()` under `_lock`, read outside it in `_process_raw_tick`).
+`subscribe()` under `_lock`, read outside it in `_process_raw_tick`) — **the
+`_registry` claim was wrong**: it has had its own internal lock since it was written
+(`TokenRegistry.register/symbol_for`), so the audit corrected this finding rather than
+"fixing" working code.
 
 **User impact.** Currently benign under CPython (atomic dict ops), but it is unsynchronised
 state that a refactor (or a free-threaded build) can break, and the code claims a
-lock discipline it does not follow.
+lock discipline it does not follow. One real defect was reproducible: `bootstrap_data_for`
+returned the live list, so one request could append to the cache every later request read.
 
 **Fix design.** Guard `_registry` reads with `_lock` (or make `TokenRegistry` internally
 locked), hold `_lock` for `_bootstrap_data` writes, move `_last_push` into the locked
@@ -807,6 +833,15 @@ exceptions and consistent counts.
 inversions (grep-audited).
 
 **Risk / rollback.** Purely defensive.
+
+**Landed (P2b).** `_last_push` is now read-modified-written inside the tick lock
+(`_handle_tick`), `_bootstrap_data` writes happen under `_lock`, and
+`bootstrap_data_for` returns a shallow copy (the deterministic failing test on
+`bf7fb25`: a caller's `append` changed what every later read returned). The lock order
+is documented on the dataclass fields. The stress test (4 ticker + 2 reader threads,
+200/400 iterations) passes on `bf7fb25` too — as the finding says, dict ops are atomic
+under the GIL, so F22 is hardening, not a live-fire bug; the copy is the one part with
+user-visible behaviour.
 
 ### 2.23 F23 — LOW — the golden file's line endings depend on the checkout
 
@@ -1044,17 +1079,17 @@ Two invariants worth stating because nothing enforces them today:
 |---|---|---|---|---|
 | `LiveFeedService._state/_reason/_reconnect_count/_last_tick_*` | reactor callbacks + request threads | `self._lock` | every UI status derives from `_state`; `LIVE` ⇒ a tick arrived while connected | `status()` re-derives STALE/MARKET_CLOSED outside the lock (ok, read-only) |
 | `_subscribed_tokens`, `_futures_tokens` | `subscribe()`/`unsubscribe()` | `self._lock` | mirror of what the exchange accepted | **not true** until F2 is fixed (records intent) |
-| `_registry` (`TokenRegistry`) | `subscribe()` | `self._lock` on write | token→symbol stable | read without lock in `_process_raw_tick` (F22) |
+| `_registry` (`TokenRegistry`) | `subscribe()` | internal lock; `subscribe()` also holds `_lock` | token→symbol stable | none — corrected in P2b: it was always internally locked |
 | `_sse_clients` | request threads + reactor | `_sse_lock` | ≤50 clients | unlocked `len()` in `chart_stream` (F17) |
-| `_last_push` | reactor thread | none | per-symbol throttle ≤4/s | unsynchronised (F22) |
-| `_bootstrap_data` | bootstrap threads | none | append-only snapshot per symbol | unsynchronised read/write (F22) |
+| `_last_push` | reactor thread | `self._lock` (since P2b) | per-symbol throttle ≤4/s | none |
+| `_bootstrap_data` | bootstrap threads | `self._lock` (since P2b); reads return a copy | snapshot per symbol never mutated by readers | none |
 | `CandleBuilder` (`_open/_last_seen/_emitted`) | reactor thread (feed) / worker thread (bot) | internal `RLock` | one open candle per symbol; emitted minutes never re-emitted | I/O under lock: none observed |
 | `Engine` (history, cooldown, params) | worker thread (bot) / demo thread (UI) | own lock for `stats()` | frozen `StrategyParams` | none found |
 | `MarketWorker._queue` | websocket thread → worker thread | `queue.Queue(maxsize)` | bounded, drop-new on full, drops counted | correct |
-| `NotifierHub._queue` | producers → notifier thread | `queue.Queue()` | must be bounded | **unbounded** (F18) |
+| `NotifierHub._queue` | producers → notifier thread | `queue.Queue(maxsize=NOTIFY_QUEUE_MAX)` | bounded: incoming system dropped; alert evicts oldest system, else oldest alert; drops counted + DLQ (F18) | correct |
 | `AlertStore` (SQLite) | bot writer; dashboard reader | `RLock` + one connection, WAL | dedup ledger is the source of truth | dashboard uses its own read-only connection (WAL ⇒ readers never block the writer) |
-| `.env` | `SettingsStore.save()` and `cli.login_cmd.write_access_token()` | **none** | never partially written | temp+replace is atomic, but read-modify-write races (F26) |
-| `chart_watchlist.json` | `ChartService` | **none** | read-modify-write whole file | shared temp name (F21) |
+| `.env` | `SettingsStore.save()` and `cli.login_cmd.write_access_token()` | `EnvFile` lock (thread + OS advisory) | never partially written | correct |
+| `chart_watchlist.json` | `ChartService` | `_watchlist_lock` + per-writer temp (since P2b) | read-modify-write whole file | correct |
 
 **Lock discipline to adopt (and document in `AGENTS.md` when P6 lands):**
 
@@ -1383,6 +1418,29 @@ removed** relative to `e2bcc41^` (pre-P2). Relative to the merged P2 code, the n
 now-unused `secrets`/`CSRF_COOKIE_NAME` imports were dropped.
 
 ### P3 - release + CI + sources + repo hygiene (F9 + F10 + F16 + F23 + F25)
+### P2b — concurrency hardening (F21 + F22)
+
+1. `ChartService`: one re-entrant lock around the watchlist read-modify-write **and**
+   the reads (Windows: a reader holding the file open makes another thread's
+   `os.replace` fail with "Access is denied"); per-writer temp names (`pid` +
+   `uuid4`); remove the temp file if the write fails.
+2. `LiveFeedService`: move `_last_push` into the existing tick lock; take `_lock` for
+   `_bootstrap_data` writes and return a copy from `bootstrap_data_for`; document
+   `_lock → _sse_lock → builder._lock`.
+3. Correct F22's stale `_registry` claim (it has been internally locked all along) and
+   F21's "20 symbols" acceptance (the product caps the list at `WATCHLIST_LIMIT = 10`).
+
+Files: `ui/chart/service.py`, `ui/live_feed.py`,
+`tests/unit/test_chart_watchlist_concurrency.py`,
+`tests/unit/test_live_feed_concurrency.py`.
+
+Acceptance: every concurrent add within the cap survives, each writer has a unique temp
+file, no stray `.tmp`; a reader cannot mutate the bootstrap cache; 4 ticker + 2 reader
+threads run clean; the lock order is documented.
+
+Risk: local, defensive; revert the branch.
+
+### P3 — release + CI + sources (F9 + F10 + F16)
 
 1. `workflow_dispatch` dry-run for release; guard every publish step.
 2. Python 3.13/3.14 as `continue-on-error`; update classifiers/README.
