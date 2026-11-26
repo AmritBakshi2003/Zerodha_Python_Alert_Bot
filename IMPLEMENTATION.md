@@ -29,19 +29,19 @@ clean (82 source files), and `tests/test_alerts_only.py` green.
 | F3 official holiday list | **PARTIAL** — parser + script shipped; NSE blocks scripted fetches, owner must run `scripts/refresh_holidays.py` once (N4) | `config/holidays.yaml` |
 | F4 market clock | **DONE** (P1, PR #20) | `core/calendar.py`, `ui/status.py` |
 | F5 one availability truth | **DONE** (P0.1, this branch) | `ui/live_feed.py availability()`, read by every surface |
-| F6 mutations without Origin | done (P2) | — |
+| F6 mutations without Origin | **DONE** (P2, PR #22; curl docs + helper consolidation closed on `fix/p2-closeout`) | `ui/security.py`, README |
 | F7 .env.tmp in messages | not reproduced (regression test added, P2) | �2.7 |
-| F8 nanosecond UserWarning | done (P2) | — |
+| F8 nanosecond UserWarning | **DONE** (P2, PR #22) | `core/clock.py` |
 | F9 release workflow | not started (P3) | — |
 | F10 CI misses 3.14 | not started (P3) | — |
 | F11 product path under-tested | not started (P4) | — |
 | F12 files too large | not started (P5) | — |
 | F13 documentation drift | not started (P6) | — |
-| F14 relative paths | done (P2) | — |
+| F14 relative paths | **DONE** (P2, PR #22) | `config/settings.py`, About page |
 | F15 no frontend tests | not started (P4) | — |
 | F16 delayed/crypto vs real providers | not started (P3) | — |
 | F17 SSE blocks the event loop | **DONE** fix on `main`; P0.1 adds the lifecycle tests that guard it (N3) | `ui/app.py` stream |
-| F18 notifier queue unbounded | done (P2) | — |
+| F18 notifier queue unbounded | **DONE** (P2, PR #22; strict drop policy + DLQ closed on `fix/p2-closeout`) | `notifiers/hub.py` |
 | F19 forming candle from wall clock | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F20 stop() poisons the feed | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F21 watchlist write race | **DONE** (P2b, this branch) | `ui/chart/service.py` |
@@ -49,7 +49,7 @@ clean (82 source files), and `tests/test_alerts_only.py` green.
 | F23 golden-file line endings | not started (**assigned to P3**) | — |
 | F24 backoff constants unused | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F25 calendar cache by identity | not started (**assigned to P3**) | — |
-| F26 `.env` read-modify-write race | done (P2) | — |
+| F26 `.env` read-modify-write race | **DONE** (P2, PR #22) | `config/env_file.py` |
 | N1 surfaces lie after token expiry | **DONE** (P0.1, this branch) | §2.N |
 | N2 data-sources 60 s lag | **DONE** (P0.1, this branch) | §2.N |
 | N3 SSE loop untested | **DONE** (P0.1, this branch; tests pass on `main` by design) | §2.N |
@@ -372,6 +372,18 @@ token is not exposed where it is not needed.
 **Risk / rollback.** A CSRF miss breaks the UI; mitigate with the Playwright smoke
 test from F15 covering settings-save and test-alert. Revert on failure.
 
+**Landed (P2).** The token is issued by `GET /` (meta tag) and `GET /api/about`
+(`csrf_token` in JSON) as an `HttpOnly; SameSite=Strict` cookie; `require_csrf_token`
+runs beside `require_same_origin` on every mutation. P2's first pass left two gaps,
+closed on `fix/p2-closeout`:
+
+* the `curl` handshake was only in the PR body, so a user reading the repo could not
+  script the dashboard. README now documents it under "Scripting the dashboard
+  (curl)", pinned by `test_curl_handshake_is_documented` (fails on `bf7fb25`);
+* token resolution was duplicated inline in `index()` and `about()` (with subtly
+  different minimum-length checks) and `csrf_token_for` was dead. Both routes now
+  call `resolve_csrf()`/`set_csrf_cookie()`, and the unused import is gone.
+
 ### 2.7 F7 — LOW — ".env.tmp" in settings warnings — **NOT REPRODUCED**
 
 **Evidence.** `grep -rn "\.env\.tmp" src/kite_alerts` → **no matches**. The temp path
@@ -651,6 +663,33 @@ is lost silently without a counter.
 
 **Risk / rollback.** Dropping messages is a behaviour change; keep the default generous
 (5 000) and revert if any delivery-ordering test regresses.
+
+**Landed (P2) and close-out.** `NOTIFY_QUEUE_MAX` bounds the hub; the shipped policy
+is: **an incoming `system`/`info` message is dropped when the queue is full** (status
+text never displaces an alert); an **incoming alert evicts the oldest `system` message,
+else the oldest alert**; every drop increments `notifier_dropped_total` and logs; every
+evicted or dropped **alert** is also appended to the dead-letter log
+(`channel="queue-overflow"`) so it stays recoverable.
+
+The first pass claimed that policy but did not implement all of it. Closed on
+`fix/p2-closeout`, each with a test that failed on `bf7fb25`:
+
+* `test_full_queue_drops_incoming_system_message` — `['alert', 'system']` was
+  delivered: a status line evicted a real alert (violates the documented policy);
+* `test_overflow_records_evicted_alert_in_dead_letter_log` — `dlq.count == 0`: a
+  dropped alert vanished with only a counter;
+* `test_backlog_does_not_grow_unbounded` — the backlog test from the plan was
+  missing; it now drives a 2 000-alert burst against a blocked channel and asserts
+  depth ≤ max, an exact drop count, `metrics == drops`, and `dlq.count == drops`.
+  The plan said 10k; 2 000 keeps ~2 000 dead-letter writes out of CI's critical
+  path while still exercising the bound for 40 full-queue rounds.
+
+Two implementation details worth recording. The eviction decision and the enqueue
+happen under the queue's own mutex: `put_nowait` raising `Full` and *then* evicting
+lost an extra alert whenever the consumer freed a slot in between (the standalone
+repro showed `dropped=9948` with `dlq=9950` for a 10k burst). Dead-letter bookkeeping
+runs outside the mutex so a producer's disk write never stalls the worker. `_STOP` is
+still always enqueued, so `close()` cannot deadlock on a full queue.
 
 ### 2.19 F19 — LOW — the "forming" candle is computed from the wall clock
 
@@ -1305,6 +1344,31 @@ paths; no `UserWarning` under `-W error::UserWarning`; no `.tmp` in any message.
 
 Risk: CSRF breaks the UI — the Playwright smoke test (P4) is the guard; land the token with
 a one-release "warn-only" mode if needed. Rollback: revert the branch.
+
+**Status: closed out on `fix/p2-closeout` (PR #22 + #24 merged).** All five items are
+implemented and tested. The first pass, audited against this plan, had four gaps which
+the close-out branch fixes (each with a test that fails on `bf7fb25`):
+
+1. F18's documented overflow policy was not the implemented one (a full queue let an
+   incoming `system` message evict an alert), dropped alerts were not written to the
+   dead-letter log, and the 10k-backlog test from the plan was absent. See §2.18.
+2. F6's `curl` handshake existed only in the PR body — now in README and pinned by
+   `test_curl_handshake_is_documented`; the duplicated token logic in `index()`/`about()`
+   and the dead `csrf_token_for` helper were consolidated into
+   `resolve_csrf()`/`set_csrf_cookie()`. See §2.6.
+3. Two tests were accidentally deleted by the P2 edit rather than kept:
+   `TestRedaction::test_redact_removes_tokens_and_webhooks` and
+   `TestHolidayLoading::test_invalid_yaml_raises`. Both restored unchanged.
+4. `_offer` evicted a message even when the consumer had just freed a slot (extra drop,
+   inconsistent `dlq.count`). The enqueue and the eviction decision now share the
+   queue mutex; see §2.18.
+
+AST audit over every P2-touched source file (`config/settings.py`, `core/clock.py`,
+`notifiers/hub.py`, `ui/app.py`, `ui/security.py`, `ui/server.py`,
+`ui/settings_store.py`, `cli/login_cmd.py`, `cli/run.py`) found **no function or class
+removed** relative to `e2bcc41^` (pre-P2). Relative to the merged P2 code, the never-called
+`csrf_token_for` helper was replaced by `resolve_csrf`/`set_csrf_cookie`, and the
+now-unused `secrets`/`CSRF_COOKIE_NAME` imports were dropped.
 
 ### P2b — concurrency hardening (F21 + F22)
 

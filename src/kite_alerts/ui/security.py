@@ -85,20 +85,24 @@ def _valid_csrf_token(value: str | None) -> bool:
     return isinstance(value, str) and len(value) >= 16
 
 
-def csrf_token_for(request: Request, response: Response) -> str:
-    """Return the per-session CSRF token, issuing a cookie if one is absent."""
+def resolve_csrf(request: Request) -> tuple[str, bool]:
+    """Return ``(token, issued)``: reuse the session cookie or mint a new token."""
     token = request.cookies.get(CSRF_COOKIE_NAME)
-    if not _valid_csrf_token(token):
-        token = secrets.token_urlsafe(32)
-        response.set_cookie(
-            CSRF_COOKIE_NAME,
-            token,
-            httponly=True,
-            samesite="strict",
-            path="/",
-        )
-    assert token is not None
-    return token
+    if _valid_csrf_token(token):
+        assert token is not None
+        return token, False
+    return secrets.token_urlsafe(32), True
+
+
+def set_csrf_cookie(response: Response, token: str) -> None:
+    """Attach the session CSRF cookie (HttpOnly, SameSite=Strict, no expiry)."""
+    response.set_cookie(
+        CSRF_COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="strict",
+        path="/",
+    )
 
 
 def require_csrf_token(request: Request) -> None:
