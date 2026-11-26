@@ -16,6 +16,7 @@ Covers:
 from __future__ import annotations
 
 import datetime as dt
+import threading
 import time
 from unittest.mock import MagicMock
 
@@ -517,6 +518,56 @@ class TestGlobalFeedSingleton:
         feed = _make_feed()
         init_feed(feed)
         assert get_feed() is feed
+
+
+class TestStopIsTerminal:
+    """F27: a callback racing stop() must never resurrect the feed."""
+
+    def test_a_late_on_connect_cannot_claim_live_while_stopping(self) -> None:
+        feed = _make_feed()
+        feed.start(api_key="k", access_token="t")
+        ticker = feed._ticker
+        assert ticker is not None
+        connect_thread = feed._thread
+        if connect_thread is not None:
+            connect_thread.join(5.0)
+        assert not connect_thread.is_alive()
+        assert feed.status().state == STATE_LIVE
+
+        entered_close = threading.Event()
+        release_close = threading.Event()
+        real_close = feed._close_socket
+        broadcasts: list[SSEEvent] = []
+
+        def blocked_close(reason: str) -> None:
+            # stop() marks the service stopped first and only then closes the
+            # socket (which bumps the generation). Pausing here reproduces the
+            # exact window the fix must survive.
+            entered_close.set()
+            assert release_close.wait(10.0), "test did not release stop()"
+            real_close(reason)
+
+        feed._close_socket = blocked_close  # type: ignore[method-assign]
+        feed._broadcast = broadcasts.append  # type: ignore[method-assign]
+
+        stopper = threading.Thread(target=feed.stop, daemon=True)
+        stopper.start()
+        try:
+            assert entered_close.wait(5.0), "stop() never reached the socket close"
+            # The very socket being stopped still delivers on_connect. The
+            # generation bump is pending, so only the in-lock _stopped check
+            # can reject it.
+            feed._on_connect(ticker, {"type": "connect"})
+            during_stop = list(broadcasts)
+            subscribed_during_stop = list(ticker.subscribed)
+        finally:
+            release_close.set()
+            stopper.join(5.0)
+
+        assert not stopper.is_alive()
+        assert [e.data.get("state") for e in during_stop if e.event == "status"] == []
+        assert subscribed_during_stop == [], "a stopped feed must not subscribe"
+        assert feed.status().state == STATE_DISCONNECTED
 
 
 class TestCandleDict:

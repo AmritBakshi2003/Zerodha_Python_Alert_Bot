@@ -17,10 +17,11 @@ the N findings (§2.N) describe what actually shipped, branch by branch.
 
 ## 0. Status snapshot (updated by every phase)
 
-Verified on branch `fix/p0-1-chart-state` (base `main` = `fe30686`), Python
-3.14.7, 826 tests collected and the full suite green, coverage **91.30%**
-(floor 85%), `ruff check` + `ruff format --check` clean, `mypy src/kite_alerts`
-clean (82 source files), and `tests/test_alerts_only.py` green.
+Verified on branch `fix/p4-product-path` (base `main` = `a5767ac`), Python
+3.14.7, 893 tests collected (886 run + 7 `e2e_ui` browser tests), full suite green,
+coverage **92.61%** (floor 85%), `ruff check` + `black --check` clean,
+`mypy src/kite_alerts` clean (83 source files), `tests/test_alerts_only.py` green,
+19 Node JS tests green, and 7 Playwright browser tests green.
 
 | Item | Status | Where |
 |---|---|---|
@@ -34,11 +35,11 @@ clean (82 source files), and `tests/test_alerts_only.py` green.
 | F8 nanosecond UserWarning | **DONE** (P2, PR #22) | `core/clock.py` |
 | F9 release workflow | not started (P3) | — |
 | F10 CI misses 3.14 | not started (P3) | — |
-| F11 product path under-tested | not started (P4) | — |
+| F11 product path under-tested | **DONE** (P4, this branch) | `tests/cli/test_run_faults.py`, `tests/cli/test_main_faults.py`, `tests/engine/test_worker_faults.py` |
 | F12 files too large | not started (P5) | — |
 | F13 documentation drift | not started (P6) | — |
 | F14 relative paths | **DONE** (P2, PR #22) | `config/settings.py`, About page |
-| F15 no frontend tests | not started (P4) | — |
+| F15 no frontend tests | **DONE** (P4, this branch) | `tests/js/*.test.mjs`, `tests/e2e_ui/test_smoke.py`, CI `ui-js`/`ui-browser` |
 | F16 delayed/crypto vs real providers | not started (P3) | — |
 | F17 SSE blocks the event loop | **DONE** fix on `main`; P0.1 adds the lifecycle tests that guard it (N3) | `ui/app.py` stream |
 | F18 notifier queue unbounded | **DONE** (P2, PR #22; strict drop policy + DLQ closed on `fix/p2-closeout`) | `notifiers/hub.py` |
@@ -50,6 +51,7 @@ clean (82 source files), and `tests/test_alerts_only.py` green.
 | F24 backoff constants unused | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F25 calendar cache by identity | not started (**assigned to P3**) | — |
 | F26 `.env` read-modify-write race | **DONE** (P2, PR #22) | `config/env_file.py` |
+| F27 late `on_connect` races `stop()` | **DONE** (P4, this branch) | `ui/live_feed.py`, §2.27 |
 | N1 surfaces lie after token expiry | **DONE** (P0.1, this branch) | §2.N |
 | N2 data-sources 60 s lag | **DONE** (P0.1, this branch) | §2.N |
 | N3 SSE loop untested | **DONE** (P0.1, this branch; tests pass on `main` by design) | §2.N |
@@ -481,6 +483,14 @@ the documented user-visible behaviour.
 
 **Risk / rollback.** Tests only.
 
+**Status (P4).** Covered by `tests/cli/test_run_faults.py`, `tests/cli/test_main_faults.py`,
+`tests/engine/test_worker_faults.py`. `MarketWorker._deliver()` now wraps
+`engine.on_candle` so a raising rule is logged and counted (`engine_errors`) but never
+kills the run loop — reproduced on `main` with `RuntimeError` escaping `step()`.
+Measured under the full `--cov=kite_alerts` run: `worker.py` 93%, `cli/run.py` 91%,
+`cli/main.py` 93% — all above the 88% target (per-submodule `--cov` is unusable on
+this machine because it corrupts pandas; see PR UNVERIFIED).
+
 ### 2.12 F12 — LOW — four files large enough to hide bugs
 
 **Evidence (`wc -l`).** `ui/settings_schema.py` 1019, `ui/live_feed.py` 862,
@@ -583,6 +593,16 @@ non-blocking for one release. Revert = remove the job.
 duplicate-connection guard when the symbol changes; `dom.js` centralises text insertion
 (no `innerHTML` assignments found in the app modules). The Playwright layer is what
 turns these observations into guarantees.
+
+**Status (P4).** Pure logic extracted into `static/badge.js` (state machine +
+`staleInfo()`), `static/format.js`, and `static/polling.js`; `dom.js` re-exports the
+formatters; `chart.js` consumes `badgeState()`, `latencyText()`, `pollIntervalMs()`.
+`tests/js/*.test.mjs` run under Node's built-in test runner (19 passing) via
+`npm test`. `tests/e2e_ui/test_smoke.py` drives the real app under Chromium in both
+light and dark colour schemes: no console/page errors on any page, DELAYED on load,
+SIMULATED (never bare LIVE) on `kite_live`, token expiry falling back to Delayed
+with a transient message, and the simulator controls. CI jobs `ui-js` and `ui-browser`
+were added; `e2e_ui` tests are excluded from the default pytest run via the marker.
 
 ### 2.16 F16 — LOW — delayed/crypto adapters never touched a real provider
 
@@ -871,6 +891,33 @@ mid-write; second writer proceeds).
 **Acceptance.** No lost keys under concurrent writes; both consumers share the helper.
 
 **Risk / rollback.** Local to two modules; revert restores today's behaviour.
+
+### 2.27 F27 — LOW — a late `on_connect` can resurrect a stopped feed
+
+**Evidence.** `ui/live_feed.py::_on_connect` checked `_generation_matches(ws)` *outside*
+`self._lock`, then took the lock to set `STATE_LIVE`. `stop()` sets `_stopped` and bumps
+`_generation` in two separate critical sections, so a callback landing between the
+check and the state write could claim LIVE for a service that is already shutting
+down. `_flush_subscriptions()` likewise only checked for a missing ticker.
+
+**User impact.** A `stop()` during a reconnect handshake can leave the UI showing a
+live/connected feed after shutdown, and can subscribe tokens on a socket that is
+being torn down.
+
+**Fix design (P4).** Move the generation check *inside* the same `with self._lock`
+block as the state write, and also reject when `_stopped` is set. Make
+`_flush_subscriptions()` return early when `_stopped`.
+
+**Tests.** `tests/unit/test_live_feed.py::TestStopIsTerminal` pauses `stop()` between
+the `_stopped` write and the socket close, fires `_on_connect` in that window, and
+asserts no status broadcast, no subscription, and a terminal `disconnected` state.
+
+**Acceptance.** The regression test fails on `main` (late callback broadcasts
+`['live']`) and passes with the fix.
+
+**Risk / rollback.** Touches only the connect-callback path; revert restores the
+race.
+
 ---
 
 ## 2.N Findings from the connected-user walkthrough (P0.1)
@@ -1362,6 +1409,13 @@ the state machine lies.
 
 Risk: Playwright adds CI time and a browser download — cache it, keep it non-blocking for
 one release. Rollback: drop the job.
+
+**Status: implemented on `fix/p4-product-path` (this branch).** F11 fault tests, the three
+pure JS modules + 19 Node tests, and 7 Playwright smoke tests are in place. The
+per-module coverage thresholds were verified from the full `--cov=kite_alerts` report
+(`worker.py` 93%, `cli/run.py` 91%, `cli/main.py` 93%). The separate
+`--cov=kite_alerts.cli.run` form corrupts pandas on this Python 3.14 machine, so the
+CI gate remains the package-wide `--cov=kite_alerts` run (see PR UNVERIFIED).
 
 ### P5 — behaviour-preserving refactor (F12)
 

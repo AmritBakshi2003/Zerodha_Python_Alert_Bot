@@ -56,6 +56,8 @@ dev = [
   "yfinance>=0.2.54,<1.9",
   # Starlette's TestClient (used only by the UI tests) needs httpx.
   "httpx>=0.27,<1",
+  # Playwright for e2e_ui browser tests.
+  "playwright>=1.40,<2",
 ]
 
 [project.scripts]
@@ -145,8 +147,12 @@ ignore_missing_imports = true
 minversion = "7.0"
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
-addopts = "-q --strict-markers --strict-config"
-markers = ["slow: long-running tests", "e2e: end-to-end pipeline tests"]
+addopts = "-q --strict-markers --strict-config -m 'not e2e_ui'"
+markers = [
+    "slow: long-running tests",
+    "e2e: end-to-end pipeline tests",
+    "e2e_ui: Playwright browser tests (requires Chromium)",
+]
 filterwarnings = [
   # A numpy 2.5 + pandas 2.3 mismatch surfaces as warnings attributed to our
   # own modules; ignore that specific message rather than the whole category.

@@ -789,7 +789,7 @@ class LiveFeedService:
         """Send queued tokens on an open socket; count only what was accepted."""
         with self._lock:
             ticker = self._ticker
-            if ticker is None:
+            if ticker is None or self._stopped:
                 return False
             quote = sorted(self._pending_quote)
             full = sorted(self._pending_full)
@@ -853,10 +853,14 @@ class LiveFeedService:
 
     # ---------------------------------------------------------------- callbacks
     def _on_connect(self, ws: Any, response: Any) -> None:
-        if not self._generation_matches(ws):
-            return
-        log.info("live feed: connected")
+        # F27: the generation check and the state write must share the lock. A
+        # ``stop()`` that lands between them sets ``_stopped`` first and bumps
+        # the generation second, so checking outside the lock would let a late
+        # callback claim LIVE for a service that is already shutting down.
         with self._lock:
+            if self._stopped or not self._generation_matches(ws):
+                return
+            log.info("live feed: connected")
             self._state = STATE_LIVE
             self._reason = ""
             self._reconnect_attempt = 0

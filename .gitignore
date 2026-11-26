@@ -37,3 +37,9 @@ venv/
 coverage.xml
 htmlcov/
 .DS_Store
+
+# --- JS / e2e_ui ---------------------------------------------------------------
+node_modules/
+playwright-report/
+test-results/
+*.trace.zip
