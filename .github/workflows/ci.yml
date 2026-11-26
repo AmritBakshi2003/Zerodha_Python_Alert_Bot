@@ -258,14 +258,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The JS tests use Node's built-in runner with no dependencies, so there
+      # is nothing to cache; setup-node with `cache: npm` fails here because the
+      # repo has no package-lock.json.
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
 
       - name: Run JS tests
         run: npm test
@@ -291,8 +289,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
-          cache-dependency-path: package-lock.json
 
       - name: Install Python deps
         run: pip install -e ".[dev]"
