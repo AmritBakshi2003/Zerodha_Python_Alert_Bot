@@ -85,9 +85,29 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).with_name("static")
 INDEX_FILE = STATIC_DIR / "index.html"
-INDEX_HTML = INDEX_FILE.read_text(encoding="utf-8")
 LICENSE_FILE = STATIC_DIR / "vendor" / "lightweight-charts" / "LICENSE"
 NOTICE_FILE = STATIC_DIR / "vendor" / "lightweight-charts" / "NOTICE"
+
+#: Shown when a deployment bundle omits the static assets (e.g. Vercel's
+#: Python function bundle). Reading index.html at *import* time made every
+#: request fail with FUNCTION_INVOCATION_FAILED when static/ was absent.
+_INDEX_FALLBACK = (
+    "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+    "<title>kite-alerts dashboard</title></head><body>"
+    "<main><h1>kite-alerts dashboard</h1>"
+    "<p>The dashboard assets are not present in this deployment. "
+    "Run <code>kite-alerts ui</code> locally to use the dashboard.</p>"
+    "</main></body></html>"
+)
+
+
+def load_index_html() -> str:
+    """Return the dashboard HTML, or an honest fallback if it was not bundled."""
+    try:
+        return INDEX_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return _INDEX_FALLBACK
+
 
 MODE = (
     "Read-only dashboard with a practice replay, a guided Kite connection and settings. "
@@ -420,7 +440,8 @@ def create_app(context: UiContext) -> FastAPI:
         lifespan=lifespan,
     )
     app.add_middleware(SecurityMiddleware)
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    if STATIC_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
@@ -441,7 +462,7 @@ def create_app(context: UiContext) -> FastAPI:
     @app.get("/", include_in_schema=False)
     def index(request: Request) -> Response:
         token, issued = resolve_csrf(request)
-        html = INDEX_HTML
+        html = load_index_html()
         if "</head>" in html:
             html = html.replace(
                 "</head>",

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import os
 import runpy
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -79,3 +81,30 @@ def test_flat_requirements_include_the_asgi_runtime() -> None:
         if line.strip() and not line.lstrip().startswith("#")
     }
     assert {"fastapi", "uvicorn", "httpx", "yfinance"} <= packages
+
+
+def test_entrypoint_imports_without_bundled_static_assets() -> None:
+    """Vercel's function bundle may omit static/; the app must still import.
+
+    Reading index.html at module import made every request fail with
+    FUNCTION_INVOCATION_FAILED when the assets were not bundled.
+    """
+    with tempfile.TemporaryDirectory() as raw:
+        bundle = Path(raw)
+        shutil.copytree(ROOT / "src" / "kite_alerts", bundle / "src" / "kite_alerts")
+        shutil.rmtree(bundle / "src" / "kite_alerts" / "ui" / "static")
+        shutil.copy(ROOT / "asgi.py", bundle / "asgi.py")
+
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(bundle)
+        result = subprocess.run(
+            [sys.executable, "-c", "import asgi; print(type(asgi.app).__name__)"],
+            cwd=bundle,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    assert result.returncode == 0, result.stderr
+    assert "FastAPI" in result.stdout
