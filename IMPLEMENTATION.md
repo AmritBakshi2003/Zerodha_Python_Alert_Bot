@@ -17,11 +17,14 @@ the N findings (§2.N) describe what actually shipped, branch by branch.
 
 ## 0. Status snapshot (updated by every phase)
 
-Verified on branch `fix/p5-refactor` (base `main` = `2a875cf`), Python
-3.14.7, 926 tests collected (919 run + 7 `e2e_ui` browser tests), full suite green,
-coverage **92.76%** (floor 85%), `ruff check` + `black --check` clean,
+Verified on branch `fix/p6-docs` (base `main` = `2a875cf`), Python
+3.14.7, 919 tests collected (912 run + 7 `e2e_ui` browser tests), full suite green,
+coverage **92.74%** (floor 85%), `ruff check` + `black --check` clean,
 `mypy src/kite_alerts` clean (83 source files), `tests/test_alerts_only.py` green,
 19 Node JS tests green, and 7 Playwright browser tests green.
+
+Deployment note: PRs #28/#29 are merged; the Vercel runtime still needs the
+`requirements.txt` UI dependencies (PR #30, `fix/vercel-runtime-deps`).
 
 | Item | Status | Where |
 |---|---|---|
@@ -36,8 +39,8 @@ coverage **92.76%** (floor 85%), `ruff check` + `black --check` clean,
 | F9 release workflow | **DONE** (P3, PR #27) | `.github/workflows/release.yml` |
 | F10 CI misses 3.14 | **DONE** (P3, PR #27) | `.github/workflows/ci.yml` |
 | F11 product path under-tested | **DONE** (P4, PR #28) | `tests/cli/test_run_faults.py`, `tests/cli/test_main_faults.py`, `tests/engine/test_worker_faults.py` |
-| F12 files too large | **PARTIAL** — live-feed types + bootstrap extracted (P5); other file splits remain | `ui/live_feed_types.py`, `ui/live_feed_bootstrap.py` |
-| F13 documentation drift | **DONE** (P6, PR #31) | `AGENTS.md`, `docs/ROADMAP.md`, `docs/live-feed.md`, `tests/unit/test_docs_truth.py` |
+| F12 files too large | **PARTIAL** — pure-JS helpers extracted in P4; Python module split planned (P5) | `ui/static/{badge,format,polling}.js` |
+| F13 documentation drift | **DONE** (P6, this branch) | `AGENTS.md`, `docs/ROADMAP.md`, `docs/live-feed.md`, `tests/unit/test_docs_truth.py` |
 | F14 relative paths | **DONE** (P2, PR #22) | `config/settings.py`, About page |
 | F15 no frontend tests | **DONE** (P4, PR #28) | `tests/js/*.test.mjs`, `tests/e2e_ui/test_smoke.py`, CI `ui-js`/`ui-browser` |
 | F16 delayed/crypto vs real providers | **DONE** (P3, PR #27; live run still UNVERIFIED) | `scripts/smoke_sources.py`, `docs/data-sources.md` |
@@ -1560,6 +1563,19 @@ are untouched. Public imports unchanged, coverage not lower (92.76%).
 3. Docs test forbidding stale C4 strings and unqualified Docker mentions.
 
 Rollback: docs only.
+
+**Status: implemented on `fix/p6-docs` (this branch).** `AGENTS.md` is present with the
+hard rules. `docs/ROADMAP.md` now labels the engine phase C0 (pre-dashboard), C1 is the
+dashboard/demo phase, Docker is explicitly ruled out, RSI is a pure zone test, the test
+count is current, and the roadmap links here as the authoritative register. The status
+table above was de-duplicated after the P2/P2b/P3/P4 merges. `docs/live-feed.md` already
+carried the "per API key" quota and the First Live Session Verification Checklist; a
+new `tests/unit/test_docs_truth.py` guards all of these claims against regression.
+
+Still manual (recorded, not automatable here): F3/N4 — run
+`scripts/refresh_holidays.py` once with real NSE access, and complete the §8.3 live
+checklist with real credentials during market hours.
+
 ---
 
 ## 6. Test strategy
