@@ -1,8 +1,13 @@
 /* Small DOM helpers shared by the page modules.
  *
  * Every string from the API goes through textContent: an alert reason, a symbol
- * or a settings value can never become markup.
+ * or a settings value can never become markup. The pure formatters live in
+ * ./format.js so Node's test runner can exercise them without a DOM.
  */
+
+import { formatPrice, formatSeconds, formatTimestamp, reasonText, sideClass } from "./format.js";
+
+export { formatSeconds, formatTimestamp, reasonText, sideClass };
 
 export function byId(id) {
   return document.getElementById(id);
@@ -78,35 +83,13 @@ export function setStatus(node, text, tone) {
   }
 }
 
-export function sideClass(side) {
-  return String(side).toUpperCase() === "BUY" ? "buy" : "sell";
-}
-
-/* The reason text without the emoji the alert message carries: the badge already
- * shows direction, and plain text never depends on an emoji font. */
-export function reasonText(item) {
-  const reasons = item.reasons || [];
-  return reasons.join("; ");
-}
-
-export function formatTimestamp(ts) {
-  return String(ts || "").replace("T", " ").slice(0, 16);
-}
-
-export function formatSeconds(seconds) {
-  const date = new Date(Number(seconds) * 1000);
-  const hours = String(date.getUTCHours()).padStart(2, "0");
-  const minutes = String(date.getUTCMinutes()).padStart(2, "0");
-  return hours + ":" + minutes;
-}
-
 export function alertRow(item) {
   const li = make("li", "alert-item " + sideClass(item.side));
   const head = make("div", "alert-head");
   head.appendChild(make("span", "badge " + sideClass(item.side), item.side));
   head.appendChild(make("span", "alert-symbol", item.symbol));
   head.appendChild(make("span", "alert-time", item.time));
-  head.appendChild(make("span", "alert-price", "@ " + Number(item.price).toFixed(2)));
+  head.appendChild(make("span", "alert-price", "@ " + formatPrice(item.price)));
   li.appendChild(head);
   li.appendChild(make("p", "alert-reason", reasonText(item)));
   return li;

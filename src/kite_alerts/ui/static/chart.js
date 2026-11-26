@@ -6,6 +6,9 @@
  */
 
 import { alertRow, api, byId, clear, make, show } from "./dom.js";
+import { badgeState } from "./badge.js";
+import { latencyText } from "./format.js";
+import { pollIntervalMs } from "./polling.js";
 
 const KEYS = {
   source: "kiteAlertsChartSource",
@@ -299,74 +302,23 @@ function setBadge(badge) {
 }
 
 function updateLiveBadge() {
-  if (state.source !== "kite_live") {
+  const node = byId("chart-badge");
+  const info = badgeState({
+    source: state.source,
+    simulated: state.isSimulated,
+    feedStatus: state.feedStatus,
+    lastTickTs: state.lastTickTs,
+    now: Date.now(),
+  });
+  if (!node || !info) {
     return;
   }
-  const badge = byId("chart-badge");
-  if (!badge) {
-    return;
-  }
-
-  if (state.isSimulated) {
-    badge.textContent = "SIMULATED";
-    badge.dataset.badge = "SIMULATED";
-    badge.title = "SIMULATED, not real market data";
-    badge.classList.remove("is-waiting", "is-stale");
-    return;
-  }
-
-  const st = state.feedStatus ? state.feedStatus.state : "connecting";
-  const now = Date.now();
-  const age = state.lastTickTs ? (now - state.lastTickTs) / 1000 : 999;
-
-  if (st === "live") {
-    if (age <= 30) {
-      badge.textContent = "LIVE";
-      badge.dataset.badge = "LIVE";
-      badge.title = "Streaming real Kite market data";
-      badge.classList.remove("is-waiting", "is-stale");
-    } else {
-      const since = state.feedStatus && state.feedStatus.last_tick_time ? state.feedStatus.last_tick_time : "";
-      badge.textContent = "Stale" + (since ? " since " + since : "");
-      badge.dataset.badge = "STALE";
-      badge.title = "No fresh tick yet; showing the last known candles";
-      badge.classList.remove("is-waiting");
-      badge.classList.add("is-stale");
-    }
-  } else if (st === "connecting") {
-    badge.textContent = "Connecting...";
-    badge.dataset.badge = "CONNECTING";
-    badge.title = "Connecting to the Kite live ticker";
-    badge.classList.remove("is-stale");
-    badge.classList.add("is-waiting");
-  } else if (st === "stale") {
-    const since = state.feedStatus && state.feedStatus.last_tick_time ? state.feedStatus.last_tick_time : "";
-    badge.textContent = "Stale" + (since ? " since " + since : "");
-    badge.dataset.badge = "STALE";
-    badge.title = "No fresh tick yet; showing the last known candles";
-    badge.classList.remove("is-waiting");
-    badge.classList.add("is-stale");
-  } else if (st === "market_closed") {
-    badge.textContent = "Market closed";
-    badge.dataset.badge = "CLOSED";
-    badge.title = "Live ticks resume at 09:15 IST";
-    badge.classList.remove("is-stale");
-    badge.classList.add("is-waiting");
-  } else if (st === "token_expired") {
-    badge.textContent = "Token expired";
-    badge.dataset.badge = "EXPIRED";
-    badge.title = "Reconnect on the Connect page to use live data";
-    badge.classList.remove("is-waiting", "is-stale");
-  } else if (st === "no_plan") {
-    badge.textContent = "No plan";
-    badge.dataset.badge = "NO PLAN";
-    badge.title = "This Kite plan has no market data; delayed NSE is used";
-    badge.classList.remove("is-waiting", "is-stale");
-  } else {
-    badge.textContent = "OFF";
-    badge.dataset.badge = "OFF";
-    badge.title = "Live feed is not connected";
-    badge.classList.remove("is-waiting", "is-stale");
+  node.textContent = info.badge;
+  node.dataset.badge = info.key;
+  node.title = info.title;
+  node.classList.remove("is-waiting", "is-stale");
+  if (info.tone) {
+    node.classList.add(info.tone);
   }
 }
 
@@ -1103,14 +1055,7 @@ function renderFeedStatus(data) {
 function renderTickLatency(data) {
   const node = byId("live-feed-latency");
   if (!node) return;
-  if (data.latency_ms !== null && data.latency_ms !== undefined) {
-    const ms = Math.max(1, Math.round(data.latency_ms));
-    node.textContent = "Latency: " + ms + " ms";
-  } else if (data.latency && data.latency.indexOf("sync") >= 0) {
-    node.textContent = "Latency: PC clock may be out of sync";
-  } else {
-    node.textContent = "Latency: " + (data.latency || "—");
-  }
+  node.textContent = latencyText(data);
   const ttNode = byId("live-feed-tick-time");
   if (ttNode && data.tick_time) {
     ttNode.textContent = "Last tick: " + data.tick_time + " IST";
@@ -1201,8 +1146,7 @@ function startLivePolling() {
   const bar = byId("live-feed-bar");
   if (bar) bar.hidden = true;
 
-  const interval = state.source === "crypto_showcase" ? 2000
-    : state.source === "nse_delayed" ? 10000 : 0;
+  const interval = pollIntervalMs(state.source);
   if (!interval) {
     return;
   }

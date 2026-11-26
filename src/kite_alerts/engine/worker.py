@@ -27,7 +27,7 @@ from ..config.settings import Settings
 from ..core.calendar import TradingCalendar
 from ..core.clock import Clock, SystemClock, seconds_until_next_minute, to_ist_ts
 from ..core.errors import classify_exception
-from ..core.models import Tick
+from ..core.models import Candle, Tick
 from ..core.ports import MetricsPort, gauge, metric
 from ..data.candle_builder import CandleBuilder
 from ..data.history import HistoryClient
@@ -192,7 +192,20 @@ class MarketWorker:
             log.exception("candle aggregation failed for %s", tick.symbol)
             return
         for candle in candles:
+            self._deliver(candle)
+
+    def _deliver(self, candle: Candle) -> None:
+        """Hand one closed candle to the engine; a bad candle never kills the loop.
+
+        ``run_live`` drives this worker through :meth:`step`, so an exception that
+        escapes ``on_candle`` would unwind the run loop and stop the bot for the
+        whole session. Evaluation bugs stay logged and counted instead.
+        """
+        try:
             self._engine.on_candle(candle)
+        except Exception:
+            metric(self._metrics, "engine_errors", 1, symbol=candle.symbol)
+            log.exception("engine evaluation failed for %s at %s", candle.symbol, candle.time)
 
     def _handle_command(self, command: Command) -> None:
         if command.kind == "backfill":
@@ -203,7 +216,7 @@ class MarketWorker:
     def _tick_clock(self) -> None:
         now = to_ist_ts(self._clock.now())
         for candle in self._builder.close_completed(now):
-            self._engine.on_candle(candle)
+            self._deliver(candle)
 
         if self._watchdog is not None:
             actions = self._watchdog.check(now)
