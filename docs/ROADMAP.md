@@ -30,10 +30,10 @@ The project is built on strict design principles that must be maintained across 
 
 ## 2. Chronological Build History & Implemented State
 
-### Phase C1: Headless Engine & Offline Practice Player
+### Phase C0 (pre-dashboard): Headless Engine & Rules
 - **Strategy & Evaluator**: 5 modular voting rules:
   - `EMA cross`: Fast/slow exponential moving average crossover with lookback buffer.
-  - `RSI zone`: Relative strength index bullish/bearish thresholds with momentum confirmation.
+  - `RSI zone`: Pure bullish/bearish zone test of the relative strength index.
   - `MACD cross`: Line vs signal crossover combined with rising/falling histogram momentum.
   - `ORB`: Opening Range Breakout evaluated against session opening window (09:15 to 09:15+N minutes).
   - `Open Interest (OI)`: Analyzes price vs open interest deltas to identify long buildup, short covering, short buildup, and long unwinding.
@@ -43,6 +43,7 @@ The project is built on strict design principles that must be maintained across 
   - Per-channel `TokenBucket` rate-limit enforcement and exponential backoff retry with jitter.
   - Duplicate message suppression via TTL dedup keys.
   - Dead Letter Queue (`logs/dead-letter.jsonl`) preserving delivery failures with diagnostic context.
+### Phase C1: Local Dashboard & Practice Demo
 - **Local Dashboard & Practice Demo**:
   - FastAPI server serving lightweight single-page application (vanilla JS, modern CSS).
   - Offline synthetic demo player reproducing the golden demo output (`kite-alerts demo`).
@@ -143,9 +144,9 @@ The project is built on strict design principles that must be maintained across 
    - Export alert logs and historical performance to CSV, Excel, or interactive HTML reports.
 
 ### E. Portability, Deployment & Packaging
-1. **Containerized Deployment (Docker Compose)**:
-   - Self-contained `Dockerfile` and `docker-compose.yml` for headless deployment on local Linux home servers, Intel NUCs, or Raspberry Pis.
-2. **Desktop System Tray Companion**:
+1. **Containerized deployment — RULED OUT**:
+   - Docker / Docker Compose is **not** a supported deployment target. The bot is a single-user, BYOK, loopback-only tool: install it locally with `pip install -e ".[dev]"`. Do not add a `Dockerfile` or `docker-compose.yml`.
+2. **Desktop System Tray Companion (planned, not implemented)**:
    - Lightweight system tray icon (Windows/macOS) indicating connection status, unread alert badges, and quick links to open the browser dashboard.
 
 ---
@@ -179,5 +180,9 @@ c:\Users\BAKSHI\Downloads\Zerodha_Python_Alert_Bot
 │       ├── live_feed.py # KiteTicker WebSocket feed and SSE streaming engine
 │       ├── simulator.py # Offline Kite market data simulator with dev controls
 │       └── server.py    # Uvicorn server launcher
-└── tests/               # Comprehensive unit and integration test suite (725 tests, >85% coverage)
+└── tests/               # Unit, integration, property, JS and browser tests (912 tests, 92.7% coverage)
 ```
+
+Audit status and the authoritative item-by-item register live in
+[`IMPLEMENTATION.md`](../IMPLEMENTATION.md). Items in this roadmap marked
+"planned" are not implemented; see that document for what is actually shipped.
