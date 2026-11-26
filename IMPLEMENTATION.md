@@ -32,23 +32,26 @@ clean (82 source files), and `tests/test_alerts_only.py` green.
 | F6 mutations without Origin | **DONE** (P2, PR #22; curl docs + helper consolidation closed on `fix/p2-closeout`) | `ui/security.py`, README |
 | F7 .env.tmp in messages | not reproduced (regression test added, P2) | �2.7 |
 | F8 nanosecond UserWarning | **DONE** (P2, PR #22) | `core/clock.py` |
-| F9 release workflow | not started (P3) | — |
-| F10 CI misses 3.14 | not started (P3) | — |
+| F9 release workflow | **DONE** (P3, this branch) | `.github/workflows/release.yml` |
+| F10 CI misses 3.14 | **DONE** (P3, this branch) | `.github/workflows/ci.yml` |
 | F11 product path under-tested | not started (P4) | — |
 | F12 files too large | not started (P5) | — |
 | F13 documentation drift | not started (P6) | — |
 | F14 relative paths | **DONE** (P2, PR #22) | `config/settings.py`, About page |
 | F15 no frontend tests | not started (P4) | — |
-| F16 delayed/crypto vs real providers | not started (P3) | — |
+| F16 delayed/crypto vs real providers | **DONE** (P3, this branch; live run still UNVERIFIED) | `scripts/smoke_sources.py`, `docs/data-sources.md` |
 | F17 SSE blocks the event loop | **DONE** fix on `main`; P0.1 adds the lifecycle tests that guard it (N3) | `ui/app.py` stream |
 | F18 notifier queue unbounded | **DONE** (P2, PR #22; strict drop policy + DLQ closed on `fix/p2-closeout`) | `notifiers/hub.py` |
 | F19 forming candle from wall clock | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F20 stop() poisons the feed | **DONE** (P0, PR #19) | `ui/live_feed.py` |
+| F21 watchlist write race | not started (**assigned to P2b**) | — |
+| F22 unsynchronised shared dicts | not started (**assigned to P2b**) | — |
+| F23 golden-file line endings | **DONE** (P3, this branch) | `.gitattributes` |
 | F21 watchlist write race | **DONE** (P2b, this branch) | `ui/chart/service.py` |
 | F22 unsynchronised shared dicts | **DONE** (P2b, this branch; `_registry` was already locked, finding corrected) | `ui/live_feed.py` |
 | F23 golden-file line endings | not started (**assigned to P3**) | — |
 | F24 backoff constants unused | **DONE** (P0, PR #19) | `ui/live_feed.py` |
-| F25 calendar cache by identity | not started (**assigned to P3**) | — |
+| F25 calendar cache by identity | **DONE** (P3, this branch) | `ui/chart/service.py` |
 | F26 `.env` read-modify-write race | **DONE** (P2, PR #22) | `config/env_file.py` |
 | N1 surfaces lie after token expiry | **DONE** (P0.1, this branch) | §2.N |
 | N2 data-sources 60 s lag | **DONE** (P0.1, this branch) | §2.N |
@@ -56,8 +59,8 @@ clean (82 source files), and `tests/test_alerts_only.py` green.
 | N4 holiday list empty on this machine | **RECORDED** — manual owner step | §2.N |
 | N5 phase assignments for leftover findings | **RECORDED** | §2.N |
 
-Phase assignment record (N5, per owner instruction): F18 → **P2**;
-F21, F22 → **P2b** (new concurrency phase); F23, F25 → **P3**.
+Phase assignment record (N5, per owner instruction): F18 → **P2** (merged);
+F21, F22 → **P2b** (PR #26); F23, F25 → **P3** (this branch).
 
 ---
 
@@ -439,6 +442,15 @@ manual dry-run run, linked in the PR.
 
 **Risk / rollback.** Workflow-only; revert the file.
 
+**Landed (P3).** `release.yml` now accepts `workflow_dispatch` with a `dry_run`
+boolean (default `true`), and the only publish step (`gh release create`) is
+guarded with `if: github.event_name == 'push'`. A dispatch therefore builds the
+sdist/wheel, passes the `dist` artifact to the publish job, recomputes the
+checksums and stops; a `v*` tag keeps the old behaviour. `tests/test_workflows.py`
+pins the triggers, the guard on every publish command, and one version per
+artifact action. **The dry run itself has not been executed** (it needs a push
+to the repo); it is in the PR's UNVERIFIED list until the first manual run.
+
 ### 2.10 F10 — LOW — CI never tests the owner's Python
 
 **Evidence.** `.github/workflows/ci.yml:65` →
@@ -457,6 +469,13 @@ blocking once green twice. Update classifiers and README.
 "target Python" matches reality.
 
 **Risk / rollback.** None (non-blocking); revert the matrix lines.
+
+**Landed (P3).** The `test` job now runs an explicit matrix of 3.10-3.14 with an
+`experimental` flag, and the job's `continue-on-error: ${{ matrix.experimental }}`
+keeps 3.13/3.14 visible without blocking. Classifiers gained 3.13/3.14 and the
+README says 3.10-3.14. `tests/test_workflows.py` asserts the five versions, that
+only 3.13/3.14 are experimental, and that the guard exists. **The new jobs have
+not run yet** (no CI run from this machine); the PR's UNVERIFIED list says so.
 
 ### 2.11 F11 — MED — the main product path is under-tested
 
@@ -598,6 +617,16 @@ results in §8 as UNVERIFIED until a human runs it with internet access.
 a schema change; docs cite each provider's terms page.
 
 **Risk / rollback.** Manual script only.
+
+**Landed (P3).** `scripts/smoke_sources.py` runs the same allowlisted adapters
+against the real Yahoo/Kraken endpoints, prints candle count, last-candle UTC
+time and measured lag, and exits non-zero on any `SourceError` or shape change.
+`tests/unit/test_smoke_sources.py` pins the parsers with captured shapes (the
+script itself is missing on `main`, so those tests fail there). `docs/data-sources.md`
+gained a provider-terms table (Yahoo ToS, Kraken docs/legal) with an explicit
+note that Yahoo does not support this endpoint as an API. **No live run was
+possible from this machine**, so the measured lag and current provider shapes
+remain in the §8.1 UNVERIFIED list.
 ---
 
 ## 2 (continued). Findings from the full audit
@@ -836,6 +865,12 @@ a regenerated file green too.
 **Risk / rollback.** Re-normalising line endings touches many files; do it in its own commit
 with `git add --renormalize .` and verify the tree is unchanged apart from endings.
 
+**Landed (P3).** `.gitattributes` pins `* text=auto eol=lf` and marks common
+image types binary. The index already stored LF, so `git add --renormalize .`
+produced no content diff. `tests/unit/test_repo_hygiene.py` asserts the rules
+exist, that `git check-attr` reports `eol: lf` for `demo_output.txt`, and that no
+tracked `.py`/`.md`/`.yml`/`.yaml` file is stored with CRLF in the index.
+
 ### 2.24 F24 — LOW — documented reconnect backoff does not exist
 
 **Evidence.** `live_feed.py:61-62` defines `_BACKOFF_BASE = 1.0`, `_BACKOFF_CAP = 60.0`;
@@ -881,6 +916,18 @@ a restart — the sort of bug that is invisible until a holiday or a changed clo
 **Acceptance.** Changing session times takes effect on the next request; no stale calendar.
 
 **Risk / rollback.** Small, local.
+
+**Landed (P3).** The cache key is now
+`(open_time, close_time, pre_open_time, closing_end, stamp(holiday_file),
+stamp(special_sessions_file))`, where a stamp is `(resolved path, mtime_ns, size)`
+(or a distinct missing-file sentinel). Equal settings from a reload share one
+calendar, a changed session window rebuilds it, and editing `holidays.yaml` is
+picked up on the next request without a restart. Tests:
+`test_equal_settings_share_one_calendar`,
+`test_changed_close_time_rebuilds_the_calendar`,
+`test_editing_the_holiday_file_invalidates_the_cache` (the first and the last
+fail on the base: identity keying gives a reload a different calendar, and the
+same object keeps a stale one after the YAML changes).
 
 ### 2.26 F26 — LOW — `.env` read-modify-write is unsynchronised
 
@@ -1370,6 +1417,7 @@ removed** relative to `e2bcc41^` (pre-P2). Relative to the merged P2 code, the n
 `csrf_token_for` helper was replaced by `resolve_csrf`/`set_csrf_cookie`, and the
 now-unused `secrets`/`CSRF_COOKIE_NAME` imports were dropped.
 
+### P3 - release + CI + sources + repo hygiene (F9 + F10 + F16 + F23 + F25)
 ### P2b — concurrency hardening (F21 + F22)
 
 1. `ChartService`: one re-entrant lock around the watchlist read-modify-write **and**
@@ -1397,11 +1445,25 @@ Risk: local, defensive; revert the branch.
 1. `workflow_dispatch` dry-run for release; guard every publish step.
 2. Python 3.13/3.14 as `continue-on-error`; update classifiers/README.
 3. `scripts/smoke_sources.py` (manual) + provider terms/limits in `docs/data-sources.md`.
+4. `.gitattributes` with `* text=auto eol=lf` so a Windows checkout matches the LF golden
+   file; renormalise the index and prove the diff is endings-only.
+5. Calendar cache keyed by session values + YAML file stamps, never `id(settings)`.
 
-Acceptance: manual dry-run green; matrix runs 3.10–3.14; smoke script prints lag and exits
-non-zero on schema drift.
+Acceptance: a dispatch builds/passes artifacts and provably skips the Release; the matrix
+runs 3.10-3.14 with 3.13/3.14 non-blocking; the smoke script prints lag and exits non-zero
+on schema drift; `git check-attr eol demo_output.txt` is `lf`; equal settings reuse one
+calendar while changed values or an edited holiday file rebuild it.
 
-Risk: none to the product. Rollback: revert workflows.
+Risk: none to the product. Rollback: revert workflows/config; the code changes are local.
+
+**Landed (P3).** All five items are on this branch. Offline verification:
+`tests/test_workflows.py` (5 tests), `tests/unit/test_repo_hygiene.py` (3),
+`tests/unit/test_chart_calendar_cache.py` (3),
+`tests/unit/test_smoke_sources.py` (7) - 14 of those 18 fail on `main` for the
+expected reasons (missing dry-run input/guard, no 3.13/3.14 matrix rows, no
+`.gitattributes`, identity-keyed calendar, missing smoke script). The manual
+dry-run and the live provider run cannot be done from this machine; both are
+UNVERIFIED in the PR.
 
 ### P4 — tests for the product path + frontend (F11 + F15)
 

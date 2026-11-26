@@ -1,10 +1,19 @@
 name: Release
 
 # Publishing is a deliberate act: only an annotated/semantic tag starts this.
+# ``workflow_dispatch`` is the dry-run path: it builds and passes every artifact
+# between jobs but skips the GitHub Release itself (the only publish step is
+# guarded with ``if: github.event_name == 'push'``).
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and pass artifacts, skip the GitHub Release"
+        type: boolean
+        default: true
 
 # Read-only by default. Only the publish job may write, and only releases.
 permissions:
@@ -136,6 +145,9 @@ jobs:
           cat SHA256SUMS.txt
 
       - name: Create the GitHub Release
+        # Dry run: workflow_dispatch never reaches GitHub Releases, whatever the
+        # branch name would make GITHUB_REF_NAME. Tags keep the old behaviour.
+        if: github.event_name == 'push'
         env:
           # The automatic Actions token, scoped by the job's permissions above.
           GH_TOKEN: ${{ github.token }}
