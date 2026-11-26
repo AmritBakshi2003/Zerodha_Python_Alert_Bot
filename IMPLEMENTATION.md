@@ -17,11 +17,14 @@ the N findings (§2.N) describe what actually shipped, branch by branch.
 
 ## 0. Status snapshot (updated by every phase)
 
-Verified on branch `fix/p4-product-path` (base `main` = `a5767ac`), Python
-3.14.7, 893 tests collected (886 run + 7 `e2e_ui` browser tests), full suite green,
-coverage **92.61%** (floor 85%), `ruff check` + `black --check` clean,
+Verified on branch `fix/p6-docs` (base `main` = `2a875cf`), Python
+3.14.7, 919 tests collected (912 run + 7 `e2e_ui` browser tests), full suite green,
+coverage **92.74%** (floor 85%), `ruff check` + `black --check` clean,
 `mypy src/kite_alerts` clean (83 source files), `tests/test_alerts_only.py` green,
 19 Node JS tests green, and 7 Playwright browser tests green.
+
+Deployment note: PRs #28/#29 are merged; the Vercel runtime still needs the
+`requirements.txt` UI dependencies (PR #30, `fix/vercel-runtime-deps`).
 
 | Item | Status | Where |
 |---|---|---|
@@ -29,48 +32,37 @@ coverage **92.61%** (floor 85%), `ruff check` + `black --check` clean,
 | F2 subscribe before on_connect | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F3 official holiday list | **PARTIAL** — parser + script shipped; NSE blocks scripted fetches, owner must run `scripts/refresh_holidays.py` once (N4) | `config/holidays.yaml` |
 | F4 market clock | **DONE** (P1, PR #20) | `core/calendar.py`, `ui/status.py` |
-| F5 one availability truth | **DONE** (P0.1, this branch) | `ui/live_feed.py availability()`, read by every surface |
-| F6 mutations without Origin | **DONE** (P2, PR #22; curl docs + helper consolidation closed on `fix/p2-closeout`) | `ui/security.py`, README |
-| F7 .env.tmp in messages | not reproduced (regression test added, P2) | �2.7 |
+| F5 one availability truth | **DONE** (P0.1) | `ui/live_feed.py availability()`, read by every surface |
+| F6 mutations without Origin | **DONE** (P2, PR #22 + `fix/p2-closeout`) | `ui/security.py`, README |
+| F7 .env.tmp in messages | not reproduced (regression test added, P2) | §2.7 |
 | F8 nanosecond UserWarning | **DONE** (P2, PR #22) | `core/clock.py` |
-| F9 release workflow | not started (P3) | — |
-| F10 CI misses 3.14 | not started (P3) | — |
-| F11 product path under-tested | **DONE** (P4, this branch) | `tests/cli/test_run_faults.py`, `tests/cli/test_main_faults.py`, `tests/engine/test_worker_faults.py` |
-| F12 files too large | not started (P5) | — |
-| F13 documentation drift | not started (P6) | — |
+| F9 release workflow | **DONE** (P3, PR #27) | `.github/workflows/release.yml` |
+| F10 CI misses 3.14 | **DONE** (P3, PR #27) | `.github/workflows/ci.yml` |
+| F11 product path under-tested | **DONE** (P4, PR #28) | `tests/cli/test_run_faults.py`, `tests/cli/test_main_faults.py`, `tests/engine/test_worker_faults.py` |
+| F12 files too large | **PARTIAL** — pure-JS helpers extracted in P4; Python module split planned (P5) | `ui/static/{badge,format,polling}.js` |
+| F13 documentation drift | **DONE** (P6, this branch) | `AGENTS.md`, `docs/ROADMAP.md`, `docs/live-feed.md`, `tests/unit/test_docs_truth.py` |
 | F14 relative paths | **DONE** (P2, PR #22) | `config/settings.py`, About page |
-| F15 no frontend tests | **DONE** (P4, this branch) | `tests/js/*.test.mjs`, `tests/e2e_ui/test_smoke.py`, CI `ui-js`/`ui-browser` |
-| F16 delayed/crypto vs real providers | not started (P3) | — |
-| F9 release workflow | **DONE** (P3, this branch) | `.github/workflows/release.yml` |
-| F10 CI misses 3.14 | **DONE** (P3, this branch) | `.github/workflows/ci.yml` |
-| F11 product path under-tested | not started (P4) | — |
-| F12 files too large | not started (P5) | — |
-| F13 documentation drift | not started (P6) | — |
-| F14 relative paths | **DONE** (P2, PR #22) | `config/settings.py`, About page |
-| F15 no frontend tests | not started (P4) | — |
-| F16 delayed/crypto vs real providers | **DONE** (P3, this branch; live run still UNVERIFIED) | `scripts/smoke_sources.py`, `docs/data-sources.md` |
-| F17 SSE blocks the event loop | **DONE** fix on `main`; P0.1 adds the lifecycle tests that guard it (N3) | `ui/app.py` stream |
-| F18 notifier queue unbounded | **DONE** (P2, PR #22; strict drop policy + DLQ closed on `fix/p2-closeout`) | `notifiers/hub.py` |
+| F15 no frontend tests | **DONE** (P4, PR #28) | `tests/js/*.test.mjs`, `tests/e2e_ui/test_smoke.py`, CI `ui-js`/`ui-browser` |
+| F16 delayed/crypto vs real providers | **DONE** (P3, PR #27; live run still UNVERIFIED) | `scripts/smoke_sources.py`, `docs/data-sources.md` |
+| F17 SSE blocks the event loop | **DONE** (fix on `main`; lifecycle tests in P0.1) | `ui/app.py` stream |
+| F18 notifier queue unbounded | **DONE** (P2, PR #22 + `fix/p2-closeout`) | `notifiers/hub.py` |
 | F19 forming candle from wall clock | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F20 stop() poisons the feed | **DONE** (P0, PR #19) | `ui/live_feed.py` |
-| F21 watchlist write race | not started (**assigned to P2b**) | — |
-| F22 unsynchronised shared dicts | not started (**assigned to P2b**) | — |
-| F23 golden-file line endings | **DONE** (P3, this branch) | `.gitattributes` |
-| F21 watchlist write race | **DONE** (P2b, this branch) | `ui/chart/service.py` |
-| F22 unsynchronised shared dicts | **DONE** (P2b, this branch; `_registry` was already locked, finding corrected) | `ui/live_feed.py` |
-| F23 golden-file line endings | not started (**assigned to P3**) | — |
+| F21 watchlist write race | **DONE** (P2b, PR #26) | `ui/chart/service.py` |
+| F22 unsynchronised shared dicts | **DONE** (P2b, PR #26; `_registry` was already locked, finding corrected) | `ui/live_feed.py` |
+| F23 golden-file line endings | **DONE** (P3, PR #27) | `.gitattributes` |
 | F24 backoff constants unused | **DONE** (P0, PR #19) | `ui/live_feed.py` |
-| F25 calendar cache by identity | **DONE** (P3, this branch) | `ui/chart/service.py` |
+| F25 calendar cache by identity | **DONE** (P3, PR #27) | `ui/chart/service.py` |
 | F26 `.env` read-modify-write race | **DONE** (P2, PR #22) | `config/env_file.py` |
-| F27 late `on_connect` races `stop()` | **DONE** (P4, this branch) | `ui/live_feed.py`, §2.27 |
-| N1 surfaces lie after token expiry | **DONE** (P0.1, this branch) | §2.N |
-| N2 data-sources 60 s lag | **DONE** (P0.1, this branch) | §2.N |
-| N3 SSE loop untested | **DONE** (P0.1, this branch; tests pass on `main` by design) | §2.N |
+| F27 late `on_connect` races `stop()` | **DONE** (P4, PR #28) | `ui/live_feed.py`, §2.27 |
+| N1 surfaces lie after token expiry | **DONE** (P0.1) | §2.N |
+| N2 data-sources 60 s lag | **DONE** (P0.1) | §2.N |
+| N3 SSE loop untested | **DONE** (P0.1; tests pass on `main` by design) | §2.N |
 | N4 holiday list empty on this machine | **RECORDED** — manual owner step | §2.N |
 | N5 phase assignments for leftover findings | **RECORDED** | §2.N |
 
 Phase assignment record (N5, per owner instruction): F18 → **P2** (merged);
-F21, F22 → **P2b** (PR #26); F23, F25 → **P3** (this branch).
+F21, F22 → **P2b** (PR #26); F23, F25 → **P3** (PR #27).
 
 ---
 
@@ -1558,6 +1550,19 @@ Rollback: the branch is a pure move — revert restores the monolith.
 3. Docs test forbidding stale C4 strings and unqualified Docker mentions.
 
 Rollback: docs only.
+
+**Status: implemented on `fix/p6-docs` (this branch).** `AGENTS.md` is present with the
+hard rules. `docs/ROADMAP.md` now labels the engine phase C0 (pre-dashboard), C1 is the
+dashboard/demo phase, Docker is explicitly ruled out, RSI is a pure zone test, the test
+count is current, and the roadmap links here as the authoritative register. The status
+table above was de-duplicated after the P2/P2b/P3/P4 merges. `docs/live-feed.md` already
+carried the "per API key" quota and the First Live Session Verification Checklist; a
+new `tests/unit/test_docs_truth.py` guards all of these claims against regression.
+
+Still manual (recorded, not automatable here): F3/N4 — run
+`scripts/refresh_holidays.py` once with real NSE access, and complete the §8.3 live
+checklist with real credentials during market hours.
+
 ---
 
 ## 6. Test strategy
