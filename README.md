@@ -116,6 +116,24 @@ Slack webhook instructions, channel checkboxes (the terminal is always on), and
 one **Send test alert** button that reports each channel separately. The test is
 limited to one every 10 seconds and is never recorded as a real alert.
 
+### Scripting the dashboard (curl)
+
+Every state-changing route needs the dashboard's session token, so a script
+makes one read first (the cookie jar keeps the matching `HttpOnly` cookie) and
+sends the printed token back in `X-Kite-Alerts-CSRF`:
+
+```bash
+curl -s -c cookies.txt http://127.0.0.1:8765/api/about   # JSON includes "csrf_token"
+curl -s -b cookies.txt -X POST \
+  -H "X-Kite-Alerts-CSRF: <token from the JSON>" \
+  http://127.0.0.1:8765/api/test-alert
+```
+
+Browsers do this automatically: the page carries the token in a `<meta>` tag and
+the dashboard's `api()` helper adds the header to every non-GET request. A
+missing or stale token returns `403` with a plain-language message; reload the
+page (or fetch `/api/about` again) to get a fresh one.
+
 ### Bring your own Kite key
 
 Kite Connect is personal-use, so this project never ships a shared API key.
@@ -259,7 +277,7 @@ Delivery tuning: `NOTIFY_RETRIES`, `NOTIFY_TIMEOUT_SECONDS`,
 | `SYMBOL_STALE_SECONDS` | `600` | Per-instrument silence before that symbol is reported. |
 | `RECONNECT_MAX_TRIES` / `RECONNECT_MIN_DELAY` / `RECONNECT_MAX_DELAY` | `25` / `1` / `60` | SDK reconnect policy. |
 | `TICK_QUEUE_SIZE` | `20000` | Websocket → worker queue; overflow is dropped **and counted**. |
-| `NOTIFY_QUEUE_MAX` | `5000` | Notifier queue; overflow drops the oldest (system first, then alerts) and is counted. |
+| `NOTIFY_QUEUE_MAX` | `5000` | Notifier queue; a full queue drops incoming status text, while alerts evict the oldest system message then the oldest alert. Every drop is counted; dropped alerts also go to the dead-letter log. |
 | `HEARTBEAT_MINUTES` | `60` | "Still alive" message; `0` disables. |
 | `HTTP_ENABLED` / `HTTP_HOST` / `HTTP_PORT` | `true` / `127.0.0.1` / `9109` | `/health` and `/metrics`. |
 | `HTTP_ALLOW_PUBLIC` | `false` | Must be set explicitly to bind a non-loopback host. |
