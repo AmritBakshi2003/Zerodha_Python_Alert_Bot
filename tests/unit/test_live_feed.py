@@ -412,10 +412,16 @@ class TestLiveFeedCallbacksAndLifecycle:
             kite_factory=FakeKite,
         )
         feed.start(api_key="k", access_token="t")
-        if feed._thread:
-            feed._thread.join(timeout=1.0)
-        assert feed.status().state == STATE_DISCONNECTED
-        assert "failed" in feed.status().reason.lower()
+        try:
+            if feed._thread:
+                feed._thread.join(timeout=1.0)
+            assert feed.status().state == STATE_DISCONNECTED
+            assert "failed" in feed.status().reason.lower()
+        finally:
+            # A failed connect arms _schedule_reconnect(); without stop() the
+            # timer fires during a *later* test and creates another ticker,
+            # breaking FakeTicker.instances counts there (CI flake).
+            feed.stop()
 
     def test_on_close_normal_and_token_expired(self) -> None:
         feed = _make_feed()

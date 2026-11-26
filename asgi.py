@@ -13,7 +13,17 @@ without weakening that local-only security model.
 
 from __future__ import annotations
 
-from kite_alerts.ui.app import build_context, create_app
+import sys
+from pathlib import Path
+
+# Vercel's Python runtime puts the project root on sys.path but does not
+# necessarily install this package (it uses a src/ layout). Make the entrypoint
+# self-contained so `import kite_alerts` works on Vercel as well as locally.
+_SRC = Path(__file__).resolve().parent / "src"
+if _SRC.is_dir() and str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from kite_alerts.ui.app import build_context, create_app  # noqa: E402
 
 app = create_app(build_context())
 

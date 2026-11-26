@@ -8,7 +8,10 @@ and the loopback-only DNS-rebinding guard is still active on it.
 
 from __future__ import annotations
 
+import os
 import runpy
+import subprocess
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -43,3 +46,20 @@ def test_entrypoint_serves_the_dashboard_on_loopback() -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
+
+
+def test_entrypoint_bootstraps_src_layout_for_vercel() -> None:
+    """The entrypoint works when only the repo root is on sys.path (Vercel)."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT)
+    result = subprocess.run(
+        [sys.executable, "-c", "import asgi; print(type(asgi.app).__name__)"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "FastAPI" in result.stdout
