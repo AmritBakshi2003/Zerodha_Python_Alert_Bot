@@ -41,15 +41,26 @@ coverage **92.61%** (floor 85%), `ruff check` + `black --check` clean,
 | F14 relative paths | **DONE** (P2, PR #22) | `config/settings.py`, About page |
 | F15 no frontend tests | **DONE** (P4, this branch) | `tests/js/*.test.mjs`, `tests/e2e_ui/test_smoke.py`, CI `ui-js`/`ui-browser` |
 | F16 delayed/crypto vs real providers | not started (P3) | — |
+| F9 release workflow | **DONE** (P3, this branch) | `.github/workflows/release.yml` |
+| F10 CI misses 3.14 | **DONE** (P3, this branch) | `.github/workflows/ci.yml` |
+| F11 product path under-tested | not started (P4) | — |
+| F12 files too large | not started (P5) | — |
+| F13 documentation drift | not started (P6) | — |
+| F14 relative paths | **DONE** (P2, PR #22) | `config/settings.py`, About page |
+| F15 no frontend tests | not started (P4) | — |
+| F16 delayed/crypto vs real providers | **DONE** (P3, this branch; live run still UNVERIFIED) | `scripts/smoke_sources.py`, `docs/data-sources.md` |
 | F17 SSE blocks the event loop | **DONE** fix on `main`; P0.1 adds the lifecycle tests that guard it (N3) | `ui/app.py` stream |
 | F18 notifier queue unbounded | **DONE** (P2, PR #22; strict drop policy + DLQ closed on `fix/p2-closeout`) | `notifiers/hub.py` |
 | F19 forming candle from wall clock | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F20 stop() poisons the feed | **DONE** (P0, PR #19) | `ui/live_feed.py` |
 | F21 watchlist write race | not started (**assigned to P2b**) | — |
 | F22 unsynchronised shared dicts | not started (**assigned to P2b**) | — |
+| F23 golden-file line endings | **DONE** (P3, this branch) | `.gitattributes` |
+| F21 watchlist write race | **DONE** (P2b, this branch) | `ui/chart/service.py` |
+| F22 unsynchronised shared dicts | **DONE** (P2b, this branch; `_registry` was already locked, finding corrected) | `ui/live_feed.py` |
 | F23 golden-file line endings | not started (**assigned to P3**) | — |
 | F24 backoff constants unused | **DONE** (P0, PR #19) | `ui/live_feed.py` |
-| F25 calendar cache by identity | not started (**assigned to P3**) | — |
+| F25 calendar cache by identity | **DONE** (P3, this branch) | `ui/chart/service.py` |
 | F26 `.env` read-modify-write race | **DONE** (P2, PR #22) | `config/env_file.py` |
 | F27 late `on_connect` races `stop()` | **DONE** (P4, this branch) | `ui/live_feed.py`, §2.27 |
 | N1 surfaces lie after token expiry | **DONE** (P0.1, this branch) | §2.N |
@@ -58,8 +69,8 @@ coverage **92.61%** (floor 85%), `ruff check` + `black --check` clean,
 | N4 holiday list empty on this machine | **RECORDED** — manual owner step | §2.N |
 | N5 phase assignments for leftover findings | **RECORDED** | §2.N |
 
-Phase assignment record (N5, per owner instruction): F18 → **P2**;
-F21, F22 → **P2b** (new concurrency phase); F23, F25 → **P3**.
+Phase assignment record (N5, per owner instruction): F18 → **P2** (merged);
+F21, F22 → **P2b** (PR #26); F23, F25 → **P3** (this branch).
 
 ---
 
@@ -441,6 +452,15 @@ manual dry-run run, linked in the PR.
 
 **Risk / rollback.** Workflow-only; revert the file.
 
+**Landed (P3).** `release.yml` now accepts `workflow_dispatch` with a `dry_run`
+boolean (default `true`), and the only publish step (`gh release create`) is
+guarded with `if: github.event_name == 'push'`. A dispatch therefore builds the
+sdist/wheel, passes the `dist` artifact to the publish job, recomputes the
+checksums and stops; a `v*` tag keeps the old behaviour. `tests/test_workflows.py`
+pins the triggers, the guard on every publish command, and one version per
+artifact action. **The dry run itself has not been executed** (it needs a push
+to the repo); it is in the PR's UNVERIFIED list until the first manual run.
+
 ### 2.10 F10 — LOW — CI never tests the owner's Python
 
 **Evidence.** `.github/workflows/ci.yml:65` →
@@ -459,6 +479,13 @@ blocking once green twice. Update classifiers and README.
 "target Python" matches reality.
 
 **Risk / rollback.** None (non-blocking); revert the matrix lines.
+
+**Landed (P3).** The `test` job now runs an explicit matrix of 3.10-3.14 with an
+`experimental` flag, and the job's `continue-on-error: ${{ matrix.experimental }}`
+keeps 3.13/3.14 visible without blocking. Classifiers gained 3.13/3.14 and the
+README says 3.10-3.14. `tests/test_workflows.py` asserts the five versions, that
+only 3.13/3.14 are experimental, and that the guard exists. **The new jobs have
+not run yet** (no CI run from this machine); the PR's UNVERIFIED list says so.
 
 ### 2.11 F11 — MED — the main product path is under-tested
 
@@ -618,6 +645,16 @@ results in §8 as UNVERIFIED until a human runs it with internet access.
 a schema change; docs cite each provider's terms page.
 
 **Risk / rollback.** Manual script only.
+
+**Landed (P3).** `scripts/smoke_sources.py` runs the same allowlisted adapters
+against the real Yahoo/Kraken endpoints, prints candle count, last-candle UTC
+time and measured lag, and exits non-zero on any `SourceError` or shape change.
+`tests/unit/test_smoke_sources.py` pins the parsers with captured shapes (the
+script itself is missing on `main`, so those tests fail there). `docs/data-sources.md`
+gained a provider-terms table (Yahoo ToS, Kraken docs/legal) with an explicit
+note that Yahoo does not support this endpoint as an API. **No live run was
+possible from this machine**, so the measured lag and current provider shapes
+remain in the §8.1 UNVERIFIED list.
 ---
 
 ## 2 (continued). Findings from the full audit
@@ -770,23 +807,46 @@ read-modify-write on the whole file. Two concurrent requests share the same temp
 **Fix design.** A single `threading.Lock` in `ChartService` around read-modify-write, and a
 temp name that includes `os.getpid()`+`uuid4` to avoid collisions.
 
-**Tests.** `test_concurrent_adds_keep_every_symbol` (barrier + 20 threads), `test_temp_file_
-name_is_unique_per_writer`.
+**Tests.** `test_concurrent_adds_keep_every_symbol` (barrier + all 10 slots),
+`test_temp_file_name_is_unique_per_writer`.
 
-**Acceptance.** 20 concurrent adds yield 20 symbols, file parses, no stray temp files.
+**Acceptance.** Every concurrent add within `WATCHLIST_LIMIT` survives, file parses, no
+stray temp files.
 
 **Risk / rollback.** Local; revert.
+
+**Landed (P2b).** `ChartService` now has `_watchlist_lock` around the whole
+read-modify-write, and `_write_extras` uses `chart_watchlist.json.<pid>.<uuid4>.tmp`,
+removing it if the write fails. A first fix that locked only the writers still failed
+the full suite: a **reader** (`watchlist()` → `_read_extras`) could hold the file open
+while another thread's `os.replace` ran, which Windows rejects with
+`PermissionError(13, "Access is denied")`. The lock is therefore a `RLock` taken by both
+`_read_extras` and the add/remove read-modify-write (the RLock because add/remove already
+hold it when they call `_read_extras`). Two tests fail on `bf7fb25`:
+
+* `test_temp_file_name_is_unique_per_writer` — both writers used
+  `chart_watchlist.json.tmp`;
+* `test_concurrent_adds_keep_every_symbol` — on Windows the shared temp name made
+  concurrent adds fail with `PermissionError(13, "The process cannot access the file
+  because it is being used by another process")`, i.e. the dashboard returned 500s.
+
+The plan's "20 threads / 20 symbols" was wrong: `WATCHLIST_LIMIT` caps the user list at
+10, so the test drives the 10 legal slots and asserts the file contains all of them.
 
 ### 2.22 F22 — LOW — unsynchronised shared dicts in the feed
 
 **Evidence.** `_last_push` (`live_feed.py`, written in `_handle_tick` from the ticker
 thread and read on the same path), `_bootstrap_data` (written by bootstrap threads,
 read by request threads via `bootstrap_data_for`), and `_registry` (written inside
-`subscribe()` under `_lock`, read outside it in `_process_raw_tick`).
+`subscribe()` under `_lock`, read outside it in `_process_raw_tick`) — **the
+`_registry` claim was wrong**: it has had its own internal lock since it was written
+(`TokenRegistry.register/symbol_for`), so the audit corrected this finding rather than
+"fixing" working code.
 
 **User impact.** Currently benign under CPython (atomic dict ops), but it is unsynchronised
 state that a refactor (or a free-threaded build) can break, and the code claims a
-lock discipline it does not follow.
+lock discipline it does not follow. One real defect was reproducible: `bootstrap_data_for`
+returned the live list, so one request could append to the cache every later request read.
 
 **Fix design.** Guard `_registry` reads with `_lock` (or make `TokenRegistry` internally
 locked), hold `_lock` for `_bootstrap_data` writes, move `_last_push` into the locked
@@ -801,6 +861,15 @@ exceptions and consistent counts.
 inversions (grep-audited).
 
 **Risk / rollback.** Purely defensive.
+
+**Landed (P2b).** `_last_push` is now read-modified-written inside the tick lock
+(`_handle_tick`), `_bootstrap_data` writes happen under `_lock`, and
+`bootstrap_data_for` returns a shallow copy (the deterministic failing test on
+`bf7fb25`: a caller's `append` changed what every later read returned). The lock order
+is documented on the dataclass fields. The stress test (4 ticker + 2 reader threads,
+200/400 iterations) passes on `bf7fb25` too — as the finding says, dict ops are atomic
+under the GIL, so F22 is hardening, not a live-fire bug; the copy is the one part with
+user-visible behaviour.
 
 ### 2.23 F23 — LOW — the golden file's line endings depend on the checkout
 
@@ -823,6 +892,12 @@ a regenerated file green too.
 
 **Risk / rollback.** Re-normalising line endings touches many files; do it in its own commit
 with `git add --renormalize .` and verify the tree is unchanged apart from endings.
+
+**Landed (P3).** `.gitattributes` pins `* text=auto eol=lf` and marks common
+image types binary. The index already stored LF, so `git add --renormalize .`
+produced no content diff. `tests/unit/test_repo_hygiene.py` asserts the rules
+exist, that `git check-attr` reports `eol: lf` for `demo_output.txt`, and that no
+tracked `.py`/`.md`/`.yml`/`.yaml` file is stored with CRLF in the index.
 
 ### 2.24 F24 — LOW — documented reconnect backoff does not exist
 
@@ -869,6 +944,18 @@ a restart — the sort of bug that is invisible until a holiday or a changed clo
 **Acceptance.** Changing session times takes effect on the next request; no stale calendar.
 
 **Risk / rollback.** Small, local.
+
+**Landed (P3).** The cache key is now
+`(open_time, close_time, pre_open_time, closing_end, stamp(holiday_file),
+stamp(special_sessions_file))`, where a stamp is `(resolved path, mtime_ns, size)`
+(or a distinct missing-file sentinel). Equal settings from a reload share one
+calendar, a changed session window rebuilds it, and editing `holidays.yaml` is
+picked up on the next request without a restart. Tests:
+`test_equal_settings_share_one_calendar`,
+`test_changed_close_time_rebuilds_the_calendar`,
+`test_editing_the_holiday_file_invalidates_the_cache` (the first and the last
+fail on the base: identity keying gives a reload a different calendar, and the
+same object keeps a stale one after the YAML changes).
 
 ### 2.26 F26 — LOW — `.env` read-modify-write is unsynchronised
 
@@ -1047,17 +1134,17 @@ Two invariants worth stating because nothing enforces them today:
 |---|---|---|---|---|
 | `LiveFeedService._state/_reason/_reconnect_count/_last_tick_*` | reactor callbacks + request threads | `self._lock` | every UI status derives from `_state`; `LIVE` ⇒ a tick arrived while connected | `status()` re-derives STALE/MARKET_CLOSED outside the lock (ok, read-only) |
 | `_subscribed_tokens`, `_futures_tokens` | `subscribe()`/`unsubscribe()` | `self._lock` | mirror of what the exchange accepted | **not true** until F2 is fixed (records intent) |
-| `_registry` (`TokenRegistry`) | `subscribe()` | `self._lock` on write | token→symbol stable | read without lock in `_process_raw_tick` (F22) |
+| `_registry` (`TokenRegistry`) | `subscribe()` | internal lock; `subscribe()` also holds `_lock` | token→symbol stable | none — corrected in P2b: it was always internally locked |
 | `_sse_clients` | request threads + reactor | `_sse_lock` | ≤50 clients | unlocked `len()` in `chart_stream` (F17) |
-| `_last_push` | reactor thread | none | per-symbol throttle ≤4/s | unsynchronised (F22) |
-| `_bootstrap_data` | bootstrap threads | none | append-only snapshot per symbol | unsynchronised read/write (F22) |
+| `_last_push` | reactor thread | `self._lock` (since P2b) | per-symbol throttle ≤4/s | none |
+| `_bootstrap_data` | bootstrap threads | `self._lock` (since P2b); reads return a copy | snapshot per symbol never mutated by readers | none |
 | `CandleBuilder` (`_open/_last_seen/_emitted`) | reactor thread (feed) / worker thread (bot) | internal `RLock` | one open candle per symbol; emitted minutes never re-emitted | I/O under lock: none observed |
 | `Engine` (history, cooldown, params) | worker thread (bot) / demo thread (UI) | own lock for `stats()` | frozen `StrategyParams` | none found |
 | `MarketWorker._queue` | websocket thread → worker thread | `queue.Queue(maxsize)` | bounded, drop-new on full, drops counted | correct |
-| `NotifierHub._queue` | producers → notifier thread | `queue.Queue()` | must be bounded | **unbounded** (F18) |
+| `NotifierHub._queue` | producers → notifier thread | `queue.Queue(maxsize=NOTIFY_QUEUE_MAX)` | bounded: incoming system dropped; alert evicts oldest system, else oldest alert; drops counted + DLQ (F18) | correct |
 | `AlertStore` (SQLite) | bot writer; dashboard reader | `RLock` + one connection, WAL | dedup ledger is the source of truth | dashboard uses its own read-only connection (WAL ⇒ readers never block the writer) |
-| `.env` | `SettingsStore.save()` and `cli.login_cmd.write_access_token()` | **none** | never partially written | temp+replace is atomic, but read-modify-write races (F26) |
-| `chart_watchlist.json` | `ChartService` | **none** | read-modify-write whole file | shared temp name (F21) |
+| `.env` | `SettingsStore.save()` and `cli.login_cmd.write_access_token()` | `EnvFile` lock (thread + OS advisory) | never partially written | correct |
+| `chart_watchlist.json` | `ChartService` | `_watchlist_lock` + per-writer temp (since P2b) | read-modify-write whole file | correct |
 
 **Lock discipline to adopt (and document in `AGENTS.md` when P6 lands):**
 
@@ -1385,16 +1472,53 @@ removed** relative to `e2bcc41^` (pre-P2). Relative to the merged P2 code, the n
 `csrf_token_for` helper was replaced by `resolve_csrf`/`set_csrf_cookie`, and the
 now-unused `secrets`/`CSRF_COOKIE_NAME` imports were dropped.
 
+### P3 - release + CI + sources + repo hygiene (F9 + F10 + F16 + F23 + F25)
+### P2b — concurrency hardening (F21 + F22)
+
+1. `ChartService`: one re-entrant lock around the watchlist read-modify-write **and**
+   the reads (Windows: a reader holding the file open makes another thread's
+   `os.replace` fail with "Access is denied"); per-writer temp names (`pid` +
+   `uuid4`); remove the temp file if the write fails.
+2. `LiveFeedService`: move `_last_push` into the existing tick lock; take `_lock` for
+   `_bootstrap_data` writes and return a copy from `bootstrap_data_for`; document
+   `_lock → _sse_lock → builder._lock`.
+3. Correct F22's stale `_registry` claim (it has been internally locked all along) and
+   F21's "20 symbols" acceptance (the product caps the list at `WATCHLIST_LIMIT = 10`).
+
+Files: `ui/chart/service.py`, `ui/live_feed.py`,
+`tests/unit/test_chart_watchlist_concurrency.py`,
+`tests/unit/test_live_feed_concurrency.py`.
+
+Acceptance: every concurrent add within the cap survives, each writer has a unique temp
+file, no stray `.tmp`; a reader cannot mutate the bootstrap cache; 4 ticker + 2 reader
+threads run clean; the lock order is documented.
+
+Risk: local, defensive; revert the branch.
+
 ### P3 — release + CI + sources (F9 + F10 + F16)
 
 1. `workflow_dispatch` dry-run for release; guard every publish step.
 2. Python 3.13/3.14 as `continue-on-error`; update classifiers/README.
 3. `scripts/smoke_sources.py` (manual) + provider terms/limits in `docs/data-sources.md`.
+4. `.gitattributes` with `* text=auto eol=lf` so a Windows checkout matches the LF golden
+   file; renormalise the index and prove the diff is endings-only.
+5. Calendar cache keyed by session values + YAML file stamps, never `id(settings)`.
 
-Acceptance: manual dry-run green; matrix runs 3.10–3.14; smoke script prints lag and exits
-non-zero on schema drift.
+Acceptance: a dispatch builds/passes artifacts and provably skips the Release; the matrix
+runs 3.10-3.14 with 3.13/3.14 non-blocking; the smoke script prints lag and exits non-zero
+on schema drift; `git check-attr eol demo_output.txt` is `lf`; equal settings reuse one
+calendar while changed values or an edited holiday file rebuild it.
 
-Risk: none to the product. Rollback: revert workflows.
+Risk: none to the product. Rollback: revert workflows/config; the code changes are local.
+
+**Landed (P3).** All five items are on this branch. Offline verification:
+`tests/test_workflows.py` (5 tests), `tests/unit/test_repo_hygiene.py` (3),
+`tests/unit/test_chart_calendar_cache.py` (3),
+`tests/unit/test_smoke_sources.py` (7) - 14 of those 18 fail on `main` for the
+expected reasons (missing dry-run input/guard, no 3.13/3.14 matrix rows, no
+`.gitattributes`, identity-keyed calendar, missing smoke script). The manual
+dry-run and the live provider run cannot be done from this machine; both are
+UNVERIFIED in the PR.
 
 ### P4 — tests for the product path + frontend (F11 + F15)
 

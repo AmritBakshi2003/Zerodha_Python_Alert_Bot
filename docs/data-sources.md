@@ -104,7 +104,38 @@ and the CLI remain the replay path that runs the real engine.
 
 For details, limits, and the Twisted reactor singleton design, see [docs/live-feed.md](live-feed.md).
 
-## Interface: adding another source
+## Provider terms and rate limits
+
+These are the terms a user is actually accepting by opening the dashboard; the
+badges and the local-only design are not a licence.
+
+| Provider | Used for | Terms / documentation | Published limits |
+|---|---|---|---|
+| Yahoo Finance (via `yfinance`) | Delayed NSE | [Yahoo Terms of Service](https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html); [`yfinance`](https://pypi.org/project/yfinance/) is an independent Apache-2.0 library, not a Yahoo product | No documented API, SLA or rate limit for this endpoint. The adapter self-limits: one fetch at a time per symbol/interval, 8 s cache, exponential backoff, 60 s circuit breaker |
+| Kraken | Crypto showcase | [Kraken public OHLC docs](https://docs.kraken.com/api/docs/rest-api/get-ohlc-data); [Kraken legal](https://www.kraken.com/legal) | Public market data, no key. Documented public-call budget is roughly one request per second; the dashboard caches for 1.5 s and polls every 2 s |
+
+**Honesty note for Yahoo.** The delayed-NSE path uses the public chart endpoint
+behind Yahoo Finance pages. Yahoo does not document or support it as an API for
+third-party applications, publishes no SLA, and its terms above are the ones
+that apply — the operator must decide whether that use is acceptable in their
+jurisdiction. This project never redistributes the data, never sends it to the
+notifier or the alert store, and labels every response `DELAYED`. If Yahoo's
+terms are not acceptable, use Kite live (your own data plan) or Demo replay.
+
+**Verifying a provider today.** Run the manual smoke script on a networked
+machine; it calls the same allowlisted adapters and fails loudly if the payload
+shape changed:
+
+```bash
+py -3 scripts/smoke_sources.py
+py -3 scripts/smoke_sources.py --provider kraken --interval 5
+```
+
+It prints candle count, last-candle UTC time and the measured lag, and exits
+non-zero on failure. It is deliberately not in CI (no network) and its results
+are UNVERIFIED until a human runs it.
+
+
 
 Every adapter implements the small `ChartSource` protocol in
 `src/kite_alerts/ui/chart/sources.py`:
