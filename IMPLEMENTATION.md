@@ -526,6 +526,15 @@ and SSE.
 **Acceptance.** Public imports unchanged, coverage not lower, recorded golden payloads
 identical before/after.
 
+**Status (P5, this branch).** `ui/live_feed_types.py` now owns the state constants,
+`FeedStatus`, `FeedAvailability`, `LiveTick`, `SSEEvent`, `SSEClient`, `TokenRegistry`,
+`_backoff_delay`, `_candle_dict` and the badge/availability tables; `ui/live_feed_bootstrap.py`
+owns the two history-bootstrap helpers. `live_feed.py` re-exports every name, so all existing
+imports and monkeypatches (including `kite_alerts.ui.live_feed._bootstrap_candles`) keep working.
+Seven characterization tests were committed **before** the move and pass unchanged. Coverage
+rose from 92.74% to 92.76%; `live_feed.py` shrank from 1145 to ~855 lines. The remaining file
+splits listed in the fix design are deliberately deferred to keep this branch a pure move.
+
 **Risk / rollback.** Pure refactor; revert the branch if anything shifts.
 
 ### 2.13 F13 — LOW — documentation drift
@@ -1539,6 +1548,10 @@ Split `live_feed.py`, `app.py`, `chart/service.py`; add characterization tests *
 each move (recorded JSON payloads). No behaviour change allowed; coverage must not drop.
 
 Rollback: the branch is a pure move — revert restores the monolith.
+
+**Status: partial on `fix/p5-refactor` (this branch).** The `live_feed.py` value/bootstrap
+extraction is complete and characterized; `app.py`, `chart/service.py` and `settings_schema.py`
+are untouched. Public imports unchanged, coverage not lower (92.76%).
 
 ### P6 — documentation + AGENTS.md (F13)
 
