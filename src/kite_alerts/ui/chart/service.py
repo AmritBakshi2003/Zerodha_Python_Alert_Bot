@@ -7,10 +7,14 @@ store, so no chart request can create an alert.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import math
+import os
+import threading
 import time
+import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -205,6 +209,10 @@ class ChartService:
     clock: SystemClock = field(default_factory=SystemClock)
     rate_limit_per_minute: int = 300
     _calls: deque[float] = field(default_factory=deque, init=False)
+    #: Re-entrant: add/remove hold it while calling _read_extras/_write_extras.
+    _watchlist_lock: threading.RLock = field(
+        default_factory=threading.RLock, init=False, repr=False
+    )
     _watch_cache: tuple[str, float, dict[str, Any]] | None = field(default=None, init=False)
     _calendar_cache: tuple[int, TradingCalendar] | None = field(default=None, init=False)
 
@@ -565,33 +573,44 @@ class ChartService:
 
     # ---------------------------------------------------------------- watchlist
     def _read_extras(self) -> dict[str, list[str]]:
-        try:
-            raw = json.loads(self.watchlist_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            return {}
-        symbols = raw.get("symbols") if isinstance(raw, dict) else None
-        if not isinstance(symbols, dict):
-            return {}
-        result: dict[str, list[str]] = {}
-        for source_id, values in symbols.items():
-            if source_id not in self.sources or not isinstance(values, list):
-                continue
-            result[source_id] = [
-                str(value).strip().upper()
-                for value in values
-                if isinstance(value, str) and is_safe_symbol(value)
-            ][:WATCHLIST_LIMIT]
-        return result
+        # Readers share the writer lock: on Windows os.replace fails with
+        # "Access is denied" if another thread has the file open (F21).
+        with self._watchlist_lock:
+            try:
+                raw = json.loads(self.watchlist_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                return {}
+            symbols = raw.get("symbols") if isinstance(raw, dict) else None
+            if not isinstance(symbols, dict):
+                return {}
+            result: dict[str, list[str]] = {}
+            for source_id, values in symbols.items():
+                if source_id not in self.sources or not isinstance(values, list):
+                    continue
+                result[source_id] = [
+                    str(value).strip().upper()
+                    for value in values
+                    if isinstance(value, str) and is_safe_symbol(value)
+                ][:WATCHLIST_LIMIT]
+            return result
 
     def _write_extras(self, extras: dict[str, list[str]]) -> None:
         path = self.watchlist_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        temp = path.with_name(path.name + ".tmp")
-        temp.write_text(
-            json.dumps({"symbols": extras}, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        temp.replace(path)
+        # A per-writer name: two concurrent saves must never write the same temp
+        # file (on Windows that is a PermissionError, elsewhere a torn read).
+        temp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp.write_text(
+                json.dumps({"symbols": extras}, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            temp.replace(path)
+        finally:
+            # A successful replace already removed the temp; on failure do not
+            # leave a stray file behind.
+            with contextlib.suppress(OSError):
+                temp.unlink(missing_ok=True)
 
     def add_watchlist(self, source_id: str, symbol: str) -> dict[str, Any]:
         source = self.source(source_id)
@@ -604,16 +623,18 @@ class ChartService:
         info = resolve_nse_symbol(symbol)
         if not info.supported:
             raise ChartError(info.reason, code="unsupported_symbol")
-        extras = self._read_extras()
-        current = extras.setdefault("nse_delayed", [])
-        if info.symbol not in current:
-            if len(current) >= WATCHLIST_LIMIT:
-                raise ChartError(
-                    f"The watchlist already has {WATCHLIST_LIMIT} added symbols. Remove one first."
-                )
-            current.append(info.symbol)
-            self._write_extras(extras)
-        self._watch_cache = None
+        with self._watchlist_lock:
+            extras = self._read_extras()
+            current = extras.setdefault("nse_delayed", [])
+            if info.symbol not in current:
+                if len(current) >= WATCHLIST_LIMIT:
+                    raise ChartError(
+                        f"The watchlist already has {WATCHLIST_LIMIT} added symbols. "
+                        "Remove one first."
+                    )
+                current.append(info.symbol)
+                self._write_extras(extras)
+            self._watch_cache = None
         return self.watchlist(source_id)
 
     def remove_watchlist(self, source_id: str, symbol: str) -> dict[str, Any]:
@@ -621,17 +642,18 @@ class ChartService:
         if source.id != "nse_delayed":
             raise ChartError("This source has a fixed watchlist.", code="fixed_watchlist")
         normalized = str(symbol or "").strip().upper()
-        extras = self._read_extras()
-        current = extras.get("nse_delayed", [])
-        if normalized not in current:
-            raise ChartError(
-                "That symbol is not a user-added watchlist entry. Symbols from Settings "
-                "cannot be removed here.",
-                code="not_removable",
-            )
-        extras["nse_delayed"] = [value for value in current if value != normalized]
-        self._write_extras(extras)
-        self._watch_cache = None
+        with self._watchlist_lock:
+            extras = self._read_extras()
+            current = extras.get("nse_delayed", [])
+            if normalized not in current:
+                raise ChartError(
+                    "That symbol is not a user-added watchlist entry. Symbols from Settings "
+                    "cannot be removed here.",
+                    code="not_removable",
+                )
+            extras["nse_delayed"] = [value for value in current if value != normalized]
+            self._write_extras(extras)
+            self._watch_cache = None
         return self.watchlist(source_id)
 
     def watchlist(self, source_id: str) -> dict[str, Any]:

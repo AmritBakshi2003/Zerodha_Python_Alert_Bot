@@ -420,6 +420,9 @@ class LiveFeedService:
     clock: SystemClock = field(default_factory=SystemClock)
 
     # --- internal state (never serialised) ---
+    #: Lock order, never inverted: ``_lock -> _sse_lock -> builder._lock``.
+    #: ``_registry`` is internally locked and never takes a feed lock, so it may
+    #: be called while any of the three is held.
     _ticker: Any = field(default=None, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
@@ -710,8 +713,13 @@ class LiveFeedService:
         self._handle_tick(tick)
 
     def bootstrap_data_for(self, symbol: str) -> list[dict[str, Any]]:
-        """Return bootstrapped historical candles for a symbol (empty if unavailable)."""
-        return self._bootstrap_data.get(symbol.upper(), [])
+        """Return bootstrapped historical candles for a symbol (empty if unavailable).
+
+        Returns a shallow copy: request threads must not be able to mutate the
+        cache another request will read (F22).
+        """
+        with self._lock:
+            return list(self._bootstrap_data.get(symbol.upper(), []))
 
     def run_bootstrap(self, symbol: str, token: int) -> None:
         """Fetch today's history in a background thread and cache it."""
@@ -724,7 +732,8 @@ class LiveFeedService:
             if not candles:
                 candles = _bootstrap_without_oi(kite, token, symbol)
             if candles:
-                self._bootstrap_data[symbol.upper()] = candles
+                with self._lock:
+                    self._bootstrap_data[symbol.upper()] = candles
                 log.info("live feed: bootstrapped %d candles for %s", len(candles), symbol)
             else:
                 log.info(
@@ -904,6 +913,7 @@ class LiveFeedService:
     def _handle_tick(self, tick: LiveTick) -> None:
         """Process one normalised tick: update state, feed builder, broadcast SSE."""
         received_at = tick.received_at
+        now_mono = time.monotonic()
         with self._lock:
             if (
                 self._state not in (STATE_LIVE, STATE_STALE, STATE_SIMULATED)
@@ -921,6 +931,12 @@ class LiveFeedService:
             if self._state == STATE_STALE and not self.is_simulated:
                 self._state = STATE_LIVE
                 self._reason = ""
+            # The throttle map shares the tick-state lock so two ticker threads
+            # cannot interleave its read-modify-write (F22).
+            last_push = self._last_push.get(tick.symbol, 0.0)
+            should_push = now_mono - last_push >= _TICK_THROTTLE_PER_SYMBOL
+            if should_push:
+                self._last_push[tick.symbol] = now_mono
 
         # Candle time is the exchange timestamp: the wall clock is the source of
         # the "forming candle in the future" bug (late processing crossed minutes).
@@ -934,10 +950,7 @@ class LiveFeedService:
         )
 
         # Broadcast the raw tick (throttled per symbol)
-        now_mono = time.monotonic()
-        last = self._last_push.get(tick.symbol, 0.0)
-        if now_mono - last >= _TICK_THROTTLE_PER_SYMBOL:
-            self._last_push[tick.symbol] = now_mono
+        if should_push:
             tick_event = SSEEvent(
                 event="tick",
                 symbol=tick.symbol,
