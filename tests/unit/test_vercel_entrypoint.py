@@ -63,3 +63,19 @@ def test_entrypoint_bootstraps_src_layout_for_vercel() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "FastAPI" in result.stdout
+
+
+def test_flat_requirements_include_the_asgi_runtime() -> None:
+    """Vercel installs requirements.txt; fastapi must be listed there.
+
+    Vercel's runtime log showed `ModuleNotFoundError: fastapi` because the flat
+    requirements file mirrored only [project.dependencies], not the `ui` extra
+    that the asgi entrypoint imports.
+    """
+    text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    packages = {
+        line.strip().split(">=")[0].split("<")[0].lower()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert {"fastapi", "uvicorn", "httpx", "yfinance"} <= packages
