@@ -116,7 +116,15 @@ def test_candle_dict_payload_is_recorded() -> None:
     )
     result = _candle_dict(candle, is_simulated=False)
     assert set(result) == {
-        "time", "ist", "open", "high", "low", "close", "volume", "oi", "is_simulated",
+        "time",
+        "ist",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "oi",
+        "is_simulated",
     }
     assert result["open"] == 100.0
     assert result["oi"] is None

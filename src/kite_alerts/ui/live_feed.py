@@ -36,7 +36,6 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import logging
-import queue
 import random
 import threading
 import time
@@ -50,196 +49,44 @@ from ..core.calendar import TradingCalendar
 from ..core.clock import IST, SystemClock, to_ist_ts
 from ..data.candle_builder import CandleBuilder
 
+# F12/P5: pure types and bootstrap helpers live in sibling modules but are
+# re-exported here so every existing import path keeps working.
+from .live_feed_bootstrap import _bootstrap_candles, _bootstrap_without_oi
+from .live_feed_types import (
+    _AVAILABILITY_TEXT,
+    _MAX_SSE_CLIENTS,
+    _PROBE_TERMINAL_STATES,
+    MAX_SUBSCRIPTIONS,
+    STATE_CONNECTING,
+    STATE_DISCONNECTED,
+    STATE_LIVE,
+    STATE_MARKET_CLOSED,
+    STATE_NO_PLAN,
+    STATE_SIMULATED,
+    STATE_STALE,
+    STATE_TOKEN_EXPIRED,
+    FeedAvailability,
+    FeedStatus,
+    LiveTick,
+    SSEClient,
+    SSEEvent,
+    TokenRegistry,
+    _backoff_delay,
+    _candle_dict,
+)
+from .live_feed_types import (
+    _BADGE_BY_STATE as _BADGE_BY_STATE,  # explicit re-export for chart.sources
+)
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Limits (see module docstring for the documented source)
+# Transport-only limits (the shared limits/states are re-exported above)
 # ---------------------------------------------------------------------------
-MAX_SUBSCRIPTIONS = 25  # well inside Kite's 3 000 limit
 _TICK_THROTTLE_PER_SYMBOL = 0.25  # seconds between SSE pushes (max 4/s)
 _HEARTBEAT_INTERVAL = 15.0  # seconds
-_MAX_SSE_QUEUE = 500  # drop-oldest; prevents a slow browser tab growing memory
-_MAX_SSE_CLIENTS = 50  # concurrent chart streams per process
-_BACKOFF_BASE = 1.0
-_BACKOFF_CAP = 60.0
 _STALE_THRESHOLD = 30.0  # seconds since last tick before badge → stale
 _CLOCK_SKEW_WARN = 30.0  # seconds of apparent negative or huge latency
-
-# Feed states exposed through /api/data-sources and the status area
-STATE_DISCONNECTED = "disconnected"
-STATE_CONNECTING = "connecting"
-STATE_LIVE = "live"
-STATE_STALE = "stale"
-STATE_TOKEN_EXPIRED = "token_expired"
-STATE_NO_PLAN = "no_plan"
-STATE_MARKET_CLOSED = "market_closed"
-STATE_SIMULATED = "simulated"
-
-
-# ---------------------------------------------------------------------------
-# Value types
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class FeedStatus:
-    state: str  # one of STATE_* constants
-    subscribed: int = 0
-    reconnect_count: int = 0
-    last_tick_age: float | None = None  # seconds since last tick
-    last_tick_time: str = ""  # HH:MM:SS IST
-    latency_ms: float | None = None  # exchange timestamp → local receipt (ms)
-    reason: str = ""  # human-readable note
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "state": self.state,
-            "subscribed": self.subscribed,
-            "reconnect_count": self.reconnect_count,
-            "last_tick_age": (
-                round(self.last_tick_age, 1) if self.last_tick_age is not None else None
-            ),
-            "last_tick_time": self.last_tick_time,
-            "latency_ms": (round(self.latency_ms, 1) if self.latency_ms is not None else None),
-            "reason": self.reason,
-        }
-
-
-@dataclass(frozen=True)
-class FeedAvailability:
-    """The single answer to "can this source be used, and how must it be labelled?".
-
-    Every surface (``/api/data-sources``, ``/api/chart/*``, the JS picker) reads
-    this instead of re-deriving availability from the plan probe or the feed state.
-    """
-
-    state: str
-    available: bool
-    enabled: bool
-    badge: str
-    notice: str
-    reason: str
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "state": self.state,
-            "available": self.available,
-            "enabled": self.enabled,
-            "badge": self.badge,
-            "notice": self.notice,
-            "reason": self.reason,
-        }
-
-
-#: Plain-language text per state. One table, so no surface can invent its own.
-_AVAILABILITY_TEXT: dict[str, str] = {
-    STATE_DISCONNECTED: "Live updates start once you connect to Zerodha.",
-    STATE_CONNECTING: "Connecting to the Kite live ticker...",
-    STATE_LIVE: "Streaming live ticks from Kite.",
-    STATE_STALE: "Connected, but no tick has arrived recently.",
-    STATE_MARKET_CLOSED: "Market is closed. Live ticks resume at 09:15 IST.",
-    STATE_TOKEN_EXPIRED: "Your Kite session expired. Reconnect to use live data.",
-    STATE_NO_PLAN: "Your Kite plan has no market data. Delayed NSE is used instead.",
-    STATE_SIMULATED: "SIMULATED, not real market data",
-}
-
-
-def _backoff_delay(attempt: int, rng: random.Random) -> float:
-    """Exponential backoff with jitter, capped: 1s, 2s, 4s ... 60s (+/- 25%)."""
-    base = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** max(0, attempt - 1)))
-    return float(base + rng.uniform(0.0, base * 0.25))
-
-
-#: The badge each state may show. "LIVE" appears here exactly once: a feed with
-#: fresh ticks (N1). Every other state must never let a surface render "LIVE".
-_BADGE_BY_STATE: dict[str, str] = {
-    STATE_DISCONNECTED: "OFF",
-    STATE_CONNECTING: "CONNECTING",
-    STATE_LIVE: "LIVE",
-    STATE_STALE: "STALE",
-    STATE_MARKET_CLOSED: "CLOSED",
-    STATE_TOKEN_EXPIRED: "EXPIRED",
-    STATE_NO_PLAN: "NO PLAN",
-    STATE_SIMULATED: "SIMULATED",
-}
-
-#: Terminal for a *retry with the same credentials*: no ticker rebuild and no
-#: badge change until the user logs in again (or the plan comes back).
-_PROBE_TERMINAL_STATES = (STATE_TOKEN_EXPIRED, STATE_NO_PLAN)
-
-
-@dataclass(frozen=True)
-class LiveTick:
-    """A normalised tick delivered to the SSE queue."""
-
-    symbol: str
-    token: int
-    price: float
-    volume_cum: int | None
-    oi: float
-    exchange_ts: float  # UTC epoch
-    received_at: float  # time.time() on arrival
-    is_simulated: bool = False
-
-    @property
-    def latency_ms(self) -> float | None:
-        """Exchange timestamp → local receipt time in ms.  None if negative/huge."""
-        diff_ms = (self.received_at - self.exchange_ts) * 1000.0
-        if diff_ms < 0 or diff_ms > 300_000:  # negative or > 5 min → clock skew
-            return None
-        return diff_ms
-
-    @property
-    def latency_note(self) -> str:
-        lat = self.latency_ms
-        if lat is None:
-            return "Your PC clock may be out of sync"
-        return f"{lat:.0f} ms"
-
-
-@dataclass(frozen=True)
-class SSEEvent:
-    """One server-sent event payload."""
-
-    event: str  # "tick" | "candle" | "status" | "heartbeat" | "gap"
-    data: dict[str, Any]
-    symbol: str = ""
-
-
-# ---------------------------------------------------------------------------
-# Token-to-symbol registry (populated from the instrument resolver at startup)
-# ---------------------------------------------------------------------------
-
-
-class TokenRegistry:
-    """Bidirectional token ↔ symbol lookup, populated at subscribe time."""
-
-    def __init__(self) -> None:
-        self._token_to_symbol: dict[int, str] = {}
-        self._symbol_to_token: dict[str, int] = {}
-        self._lock = threading.Lock()
-
-    def register(self, symbol: str, token: int) -> None:
-        with self._lock:
-            self._token_to_symbol[token] = symbol
-            self._symbol_to_token[symbol.upper()] = token
-
-    def symbol_for(self, token: int) -> str | None:
-        with self._lock:
-            return self._token_to_symbol.get(token)
-
-    def token_for(self, symbol: str) -> int | None:
-        with self._lock:
-            return self._symbol_to_token.get(symbol.upper())
-
-    def all_tokens(self) -> list[int]:
-        with self._lock:
-            return list(self._token_to_symbol.keys())
-
-    def clear(self) -> None:
-        with self._lock:
-            self._token_to_symbol.clear()
-            self._symbol_to_token.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -247,141 +94,9 @@ class TokenRegistry:
 # ---------------------------------------------------------------------------
 
 
-def _bootstrap_candles(
-    kite: Any,
-    token: int,
-    symbol: str,
-    *,
-    days: int = 1,
-) -> list[dict[str, Any]]:
-    """Fetch recent 1-minute history via kite.historical_data.
-
-    Returns a list of normalised dicts compatible with data.history.normalise_history.
-    Returns [] on failure rather than crashing.
-    """
-    from ..data.history import normalise_history
-
-    try:
-        now_ist = dt.datetime.now(tz=IST)
-        from_dt = (now_ist - dt.timedelta(days=days)).replace(
-            hour=9, minute=0, second=0, microsecond=0
-        )
-        to_dt = now_ist
-        rows = kite.historical_data(
-            token,
-            from_dt.replace(tzinfo=None),  # Kite expects naive IST
-            to_dt.replace(tzinfo=None),
-            "minute",
-            False,
-            True,  # request OI; will be retried without if unsupported
-        )
-        frame = normalise_history(rows)
-        if frame.empty:
-            return []
-        result: list[dict[str, Any]] = []
-        for ts, row in frame.iterrows():
-            epoch = int(to_ist_ts(ts).timestamp())
-            result.append(
-                {
-                    "time": epoch,
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "volume": int(row.get("volume", 0)),
-                    "oi": float(row.get("oi", 0.0)),
-                }
-            )
-        return result
-    except Exception as exc:
-        log.info("bootstrap failed for %s (%s)", symbol, type(exc).__name__)
-        return []
-
-
-def _bootstrap_without_oi(kite: Any, token: int, symbol: str) -> list[dict[str, Any]]:
-    """Fallback bootstrap without OI for instruments that reject oi=True."""
-    from ..data.history import normalise_history
-
-    try:
-        now_ist = dt.datetime.now(tz=IST)
-        from_dt = (now_ist - dt.timedelta(days=1)).replace(
-            hour=9, minute=0, second=0, microsecond=0
-        )
-        to_dt = now_ist
-        rows = kite.historical_data(
-            token,
-            from_dt.replace(tzinfo=None),
-            to_dt.replace(tzinfo=None),
-            "minute",
-            False,
-            False,
-        )
-        frame = normalise_history(rows)
-        if frame.empty:
-            return []
-        result: list[dict[str, Any]] = []
-        for ts, row in frame.iterrows():
-            epoch = int(to_ist_ts(ts).timestamp())
-            result.append(
-                {
-                    "time": epoch,
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "volume": int(row.get("volume", 0)),
-                    "oi": 0.0,
-                }
-            )
-        return result
-    except Exception as exc:
-        log.info("bootstrap (no-OI) failed for %s (%s)", symbol, type(exc).__name__)
-        return []
-
-
 # ---------------------------------------------------------------------------
 # SSE client handle
 # ---------------------------------------------------------------------------
-
-
-class SSEClient:
-    """One browser SSE connection."""
-
-    def __init__(
-        self, symbol: str = "", interval: int = 1, max_queue: int = _MAX_SSE_QUEUE
-    ) -> None:
-        self.symbol = symbol.upper()
-        self.interval = interval
-        self._queue: queue.Queue[SSEEvent | None] = queue.Queue(maxsize=max_queue)
-        self._closed = False
-
-    @property
-    def queue_size(self) -> int:
-        return self._queue.qsize()
-
-    def push(self, event: SSEEvent) -> None:
-        """Non-blocking push; drop oldest if full (slow browser tab)."""
-        if self._closed:
-            return
-        try:
-            self._queue.put_nowait(event)
-        except queue.Full:
-            with contextlib.suppress(queue.Empty):
-                self._queue.get_nowait()  # drop oldest
-            with contextlib.suppress(queue.Full):
-                self._queue.put_nowait(event)
-
-    def get(self, timeout: float = 15.0) -> SSEEvent | None:
-        """Block until an event arrives or timeout (for the heartbeat)."""
-        try:
-            return self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
-
-    def close(self) -> None:
-        self._closed = True
-        with contextlib.suppress(queue.Full):
-            self._queue.put_nowait(None)  # unblock get()
 
 
 # ---------------------------------------------------------------------------
@@ -1085,25 +800,6 @@ class LiveFeedService:
 # ---------------------------------------------------------------------------
 # SSE candle dict (chart-compatible format matching /api/chart/candles items)
 # ---------------------------------------------------------------------------
-
-
-def _candle_dict(candle: Any, *, is_simulated: bool) -> dict[str, Any]:
-    """Convert a data.candle_builder.Candle → chart-compatible dict."""
-    from .chart.transforms import ist_label
-
-    # candle.time is a pd.Timestamp (from the builder)
-    epoch = int(candle.time.timestamp()) if hasattr(candle.time, "timestamp") else int(candle.time)
-    return {
-        "time": epoch,
-        "ist": ist_label(epoch),
-        "open": float(candle.open),
-        "high": float(candle.high),
-        "low": float(candle.low),
-        "close": float(candle.close),
-        "volume": int(candle.volume),
-        "oi": float(candle.oi) if candle.oi else None,
-        "is_simulated": is_simulated,
-    }
 
 
 # ---------------------------------------------------------------------------
