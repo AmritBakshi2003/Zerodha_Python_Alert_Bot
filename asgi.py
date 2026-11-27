@@ -4,11 +4,15 @@ Vercel looks for a module-level ``app`` object in one of a handful of root-level
 files (see ``tool.vercel.entrypoint`` in its docs). This module supplies that
 object by wiring the same production context and app factory the local CLI uses.
 
-The dashboard remains loopback-only on purpose: ``ui.security.SecurityMiddleware``
-refuses any non-loopback ``Host`` header, so a public deployment of this app
-answers HTTP 400. The real, usable dashboard still runs locally via
-``kite-alerts ui``. This entrypoint exists so the repository builds on Vercel
-without weakening that local-only security model.
+The dashboard's DNS-rebinding guard stays on: ``ui.security.SecurityMiddleware``
+still refuses an unexpected ``Host`` header. A hosted deployment is trusted
+because ``vercel.json`` ships the static assets and Vercel exposes the host names
+it serves this build from (``VERCEL_URL`` and friends), which the middleware
+accepts. A local run is untouched and remains loopback-only.
+
+The deployment is a read-only demo shell: there is no ``.env``, no alert
+database and no bot process in the bundle, so it cannot place orders, read
+credentials or send notifications.
 """
 
 from __future__ import annotations

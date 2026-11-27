@@ -19,7 +19,10 @@ None of this needs a secret or a network call.
 from __future__ import annotations
 
 import ipaddress
+import os
 import secrets
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Response
@@ -30,6 +33,20 @@ from ..core.errors import ConfigError
 
 #: Host names a browser may use for this machine.
 LOOPBACK_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+
+#: Extra host names a *deliberate* deployment may answer to, comma separated.
+#: Empty by default, so a local dashboard stays loopback-only.
+ALLOWED_HOSTS_ENV = "KITE_ALERTS_ALLOWED_HOSTS"
+
+#: Vercel publishes each deployment's own host names through these variables.
+_HOSTED_URL_ENV_VARS = (
+    "VERCEL_PROJECT_PRODUCTION_URL",
+    "VERCEL_URL",
+    "VERCEL_BRANCH_URL",
+)
+
+#: Every Vercel deployment is served from a ``*.vercel.app`` name.
+VERCEL_DOMAIN_SUFFIX = ".vercel.app"
 
 #: The vendored chart library injects one small, static stylesheet for its
 #: attribution logo, so that exact content is allowed by hash rather than by
@@ -161,6 +178,53 @@ def host_header_allowed(host_header: str) -> bool:
     return is_loopback(host_from_header(host_header))
 
 
+def is_hosted_deployment(environ: Mapping[str, str] | None = None) -> bool:
+    """True when this process runs inside a hosted (Vercel) deployment."""
+    env = os.environ if environ is None else environ
+    return bool(env.get("VERCEL") or env.get("VERCEL_ENV") or env.get("VERCEL_URL"))
+
+
+def allowed_host_names(environ: Mapping[str, str] | None = None) -> frozenset[str]:
+    """Host names a deployment may answer to, beyond loopback.
+
+    A local run returns an empty set, so nothing changes for the normal use of
+    the dashboard. ``KITE_ALERTS_ALLOWED_HOSTS`` adds explicit names (for a
+    custom domain), and a hosted deployment additionally trusts the names Vercel
+    says it is serving this build from.
+    """
+    env = os.environ if environ is None else environ
+    names: set[str] = set()
+    for item in str(env.get(ALLOWED_HOSTS_ENV, "") or "").split(","):
+        name = host_from_header(item)
+        if name:
+            names.add(name)
+    if is_hosted_deployment(env):
+        for variable in _HOSTED_URL_ENV_VARS:
+            name = host_from_header(env.get(variable, "") or "")
+            if name:
+                names.add(name)
+        names.add("*" + VERCEL_DOMAIN_SUFFIX)
+    return frozenset(names)
+
+
+def host_is_allowed(host_header: str, allowed: frozenset[str] | None = None) -> bool:
+    """True for a loopback name, or one of the explicitly allowed host names.
+
+    ``allowed=None`` means "read the process environment"; pass a set to make
+    the decision explicit (the app factory does this in tests).
+    """
+    name = host_from_header(host_header)
+    if is_loopback(name):
+        return True
+    entries = allowed_host_names() if allowed is None else allowed
+    for entry in entries:
+        if entry.startswith("*.") and name.endswith(entry[1:]):
+            return True
+        if name == entry:
+            return True
+    return False
+
+
 def is_same_origin(request: Request) -> bool:
     """Origin / Sec-Fetch-Site check for state-changing routes.
 
@@ -195,11 +259,25 @@ def _apply_security_headers(response: Response) -> None:
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
-    """Reject a foreign Host header, then harden every response."""
+    """Reject a foreign Host header, then harden every response.
+
+    ``allowed_hosts`` is the app factory's way to pin the extra names at build
+    time (tests, or a custom domain). ``None`` reads the environment on each
+    request, which is what a real deployment wants.
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        *,
+        allowed_hosts: frozenset[str] | set[str] | None = None,
+    ) -> None:
+        super().__init__(app)
+        self._allowed_hosts = frozenset(allowed_hosts) if allowed_hosts is not None else None
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         host_header = request.headers.get("host", "")
-        if not host_header_allowed(host_header):
+        if not host_is_allowed(host_header, self._allowed_hosts):
             return JSONResponse(
                 status_code=400,
                 content={"detail": DNS_REBINDING_MESSAGE.format(host=host_header or "(missing)")},

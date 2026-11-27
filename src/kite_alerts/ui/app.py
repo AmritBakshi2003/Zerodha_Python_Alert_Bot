@@ -417,8 +417,17 @@ def _resolved_paths(context: UiContext) -> dict[str, Any]:
     }
 
 
-def create_app(context: UiContext) -> FastAPI:
-    """Build the FastAPI app around an explicit context (no globals, easy to test)."""
+def create_app(
+    context: UiContext,
+    *,
+    allowed_hosts: frozenset[str] | set[str] | None = None,
+) -> FastAPI:
+    """Build the FastAPI app around an explicit context (no globals, easy to test).
+
+    ``allowed_hosts`` pins the extra host names (besides loopback) that the
+    security middleware accepts. ``None`` reads the environment, which is what
+    the Vercel entrypoint relies on.
+    """
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -439,7 +448,7 @@ def create_app(context: UiContext) -> FastAPI:
         openapi_url=None,
         lifespan=lifespan,
     )
-    app.add_middleware(SecurityMiddleware)
+    app.add_middleware(SecurityMiddleware, allowed_hosts=allowed_hosts)
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -476,10 +485,14 @@ def create_app(context: UiContext) -> FastAPI:
 
     @app.get("/license", include_in_schema=False)
     def license_text() -> FileResponse:
+        if not LICENSE_FILE.is_file():
+            raise HTTPException(status_code=404, detail="The licence file was not bundled.")
         return FileResponse(LICENSE_FILE, media_type="text/plain; charset=utf-8")
 
     @app.get("/notice", include_in_schema=False)
     def notice_text() -> FileResponse:
+        if not NOTICE_FILE.is_file():
+            raise HTTPException(status_code=404, detail="The notice file was not bundled.")
         return FileResponse(NOTICE_FILE, media_type="text/plain; charset=utf-8")
 
     @app.get("/api/about")
