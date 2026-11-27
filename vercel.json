@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "asgi.py": {
+      "includeFiles": "{src/kite_alerts/ui/static/**,config/**}",
+      "maxDuration": 30
+    }
+  }
+}
