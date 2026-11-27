@@ -11,8 +11,10 @@ two things the split must not change:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from kite_alerts.ui.app import create_app
@@ -66,10 +68,27 @@ def _app(tmp_path: Path):  # type: ignore[no-untyped-def]
     return create_app(context)
 
 
+def _leaf_routes(app: FastAPI) -> Iterator[object]:
+    """Flatten included routers across FastAPI versions.
+
+    FastAPI 0.165 keeps ``include_router`` routes behind an ``_IncludedRouter``
+    wrapper (older versions flatten them into ``app.routes``), so a test that
+    only looks at the top level sees an empty route table on newer releases.
+    """
+    for route in app.routes:
+        nested = getattr(route, "original_router", None) or getattr(route, "router", None)
+        if nested is not None and getattr(nested, "routes", None) is not None:
+            yield from nested.routes
+        else:
+            yield route
+
+
 def test_every_documented_route_is_registered(tmp_path: Path) -> None:
     app = _app(tmp_path)
     actual = {
-        (route.path, method) for route in app.routes for method in getattr(route, "methods", set())
+        (route.path, method)
+        for route in _leaf_routes(app)
+        for method in getattr(route, "methods", None) or set()
     }
     assert actual >= EXPECTED_ROUTES, sorted(EXPECTED_ROUTES - actual)
 
