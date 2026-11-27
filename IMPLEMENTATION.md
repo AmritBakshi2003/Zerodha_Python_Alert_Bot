@@ -39,7 +39,7 @@ Deployment note: PRs #28/#29 are merged; the Vercel runtime still needs the
 | F9 release workflow | **DONE** (P3, PR #27) | `.github/workflows/release.yml` |
 | F10 CI misses 3.14 | **DONE** (P3, PR #27) | `.github/workflows/ci.yml` |
 | F11 product path under-tested | **DONE** (P4, PR #28) | `tests/cli/test_run_faults.py`, `tests/cli/test_main_faults.py`, `tests/engine/test_worker_faults.py` |
-| F12 files too large | **PARTIAL** — pure-JS helpers extracted in P4; Python module split planned (P5) | `ui/static/{badge,format,polling}.js` |
+| F12 files too large | **PARTIAL** — pure-JS helpers extracted in P4; `live_feed.py` split in P5; `app.py` split into routers in P5b (`fix/p5b-remaining-splits`); `chart/service.py` and `settings_schema.py` still to split | `ui/static/{badge,format,polling}.js`, `ui/live_feed_types.py`, `ui/live_feed_bootstrap.py`, `ui/routes/*` |
 | F13 documentation drift | **DONE** (P6, this branch) | `AGENTS.md`, `docs/ROADMAP.md`, `docs/live-feed.md`, `tests/unit/test_docs_truth.py` |
 | F14 relative paths | **DONE** (P2, PR #22) | `config/settings.py`, About page |
 | F15 no frontend tests | **DONE** (P4, PR #28) | `tests/js/*.test.mjs`, `tests/e2e_ui/test_smoke.py`, CI `ui-js`/`ui-browser` |
@@ -1549,9 +1549,24 @@ each move (recorded JSON payloads). No behaviour change allowed; coverage must n
 
 Rollback: the branch is a pure move — revert restores the monolith.
 
-**Status: partial on `fix/p5-refactor` (this branch).** The `live_feed.py` value/bootstrap
-extraction is complete and characterized; `app.py`, `chart/service.py` and `settings_schema.py`
-are untouched. Public imports unchanged, coverage not lower (92.76%).
+**Status: partial on `fix/p5-refactor`; `app.py` split completed on `fix/p5b-remaining-splits`.**
+The `live_feed.py` value/bootstrap extraction is complete and characterized;
+`chart/service.py` and `settings_schema.py` are untouched. Public imports
+unchanged, coverage not lower (92.76% after P5).
+
+On `fix/p5b-remaining-splits`: eight router factories under `ui/routes/`
+(dashboard shell, overview, alerts, settings, kite, simulator controls,
+notifications, chart, practice) plus `routes/shared.py` now own the handlers
+and their helpers; `app.py` keeps only `UiContext`, `build_context`, the
+app/lifespan/middleware/static mount and the validation handler. All public
+names (`UiContext`, `build_context`, `create_app`, constants, helpers) are
+re-exported from `ui.app`, so no import site changed. Six new characterization
+tests in `tests/unit/test_ui_routes_split.py` pin the full (path, method)
+route table, the static mount and the recorded shapes of the about/status/
+settings/practice payloads — they would have caught the sim and notification
+routes being left unregistered during the move. Coverage rose to 92.88% from
+92.77%. `chart/service.py` and `settings_schema.py` are deliberately out of
+scope here to keep one phase per branch.
 
 ### P6 — documentation + AGENTS.md (F13)
 
