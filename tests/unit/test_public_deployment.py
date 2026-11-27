@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from kite_alerts.ui import app as app_module
+from kite_alerts.ui import routes as ui_routes
 from kite_alerts.ui.app import create_app
 from kite_alerts.ui.security import (
     ALLOWED_HOSTS_ENV,
@@ -167,7 +167,7 @@ def test_missing_vendored_file_returns_404_not_500(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A bundle without the vendored licence must answer honestly, not crash."""
-    monkeypatch.setattr(app_module, "LICENSE_FILE", tmp_path / "absent-LICENSE")
+    monkeypatch.setattr(ui_routes.dashboard, "LICENSE_FILE", tmp_path / "absent-LICENSE")
     client = _client(tmp_path, base_url="http://127.0.0.1:8765")
     response = client.get("/license")
     assert response.status_code == 404

@@ -2,9 +2,9 @@
 
 API layout:
 
-============================  ======  ==========================================
+===========================  ======  ==========================================
 Route                         Method  Purpose
-============================  ======  ==========================================
+===========================  ======  ==========================================
 ``/api/status``               GET     bot health + today's buy/sell counters
 ``/api/alerts/recent``        GET     newest alerts for the dashboard feed
 ``/api/alerts/history``       GET     filtered, paginated read-only history
@@ -16,159 +16,100 @@ Route                         Method  Purpose
 ``/api/settings``             PUT     validate + atomic write to .env
 ``/api/settings/check``       POST    the same validation as config-check
 ``/api/kite/login``           POST    start Zerodha's own login redirect
-``/callback``                 GET     loopback redirect: store the daily token
+``/callback``
 ``/api/kite/manual-token``    POST    fallback: paste a request_token
 ``/api/kite/session``         GET     connected / expired / not connected
 ``/api/kite/disconnect``      POST    clear the saved token
 ``/api/data-sources``         GET     availability + reason per source
 ``/api/notifications/telegram/chat-id``  POST  find the user's chat id
 ``/api/practice/check``       POST    replay the demo with the saved settings
-============================  ======  ==========================================
+===========================  ======  ==========================================
+
+The handlers live in :mod:`kite_alerts.ui.routes` (dashboard shell, overview,
+alerts, settings, kite, chart, practice); this module owns the app object, the
+lifespan, the security middleware and the static mount.
 
 C3 adds ``/api/replay`` and ``/api/run`` (start/stop + log stream).
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import math
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
-    JSONResponse,
-    RedirectResponse,
-    StreamingResponse,
-)
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
 
 from .. import __version__
 from ..config.settings import Settings, load_settings
 from ..core.errors import ConfigError
 from .chart.service import ChartService
-from .chart.types import ChartError
-from .demo_player import (
-    DemoTimeline,
-    build_demo_timeline_for,
-    warm_demo_timeline,
-)
+from .demo_player import DemoTimeline, warm_demo_timeline
 from .history import AlertHistoryReader
-from .kite_connect import (
-    STATE_COOKIE,
-    ConnectError,
-    KiteConnectService,
-    default_kite_factory,
-)
+from .kite_connect import KiteConnectService, default_kite_factory
 from .notifications import TelegramSetupService
-from .security import (
-    SecurityMiddleware,
-    require_csrf_token,
-    require_same_origin,
-    resolve_csrf,
-    set_csrf_cookie,
+from .routes import (
+    alerts_router,
+    chart_router,
+    dashboard_router,
+    kite_router,
+    notifications_router,
+    overview_router,
+    practice_router,
+    settings_router,
 )
-from .settings_schema import connect_payload, settings_payload
+from .routes.shared import (
+    _INDEX_FALLBACK,
+    ALERTS_ONLY_STATEMENT,
+    ATTRIBUTION,
+    FIRST_DAY_CHECKLIST,
+    INDEX_FILE,
+    LICENSE_FILE,
+    MODE,
+    NO_SETTINGS_MESSAGE,
+    NOTICE_FILE,
+    STATIC_DIR,
+    SettingsUpdate,
+    _error,
+    _ndjson,
+    _practice_payload,
+    _resolved_paths,
+    load_index_html,
+)
+from .security import SecurityMiddleware
 from .settings_store import SettingsStore
 from .status import StatusService, http_probe
 from .test_alert import NotifierFactory, TestAlertService
 
 log = logging.getLogger(__name__)
 
-STATIC_DIR = Path(__file__).with_name("static")
-INDEX_FILE = STATIC_DIR / "index.html"
-LICENSE_FILE = STATIC_DIR / "vendor" / "lightweight-charts" / "LICENSE"
-NOTICE_FILE = STATIC_DIR / "vendor" / "lightweight-charts" / "NOTICE"
-
-#: Shown when a deployment bundle omits the static assets (e.g. Vercel's
-#: Python function bundle). Reading index.html at *import* time made every
-#: request fail with FUNCTION_INVOCATION_FAILED when static/ was absent.
-_INDEX_FALLBACK = (
-    "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
-    "<title>kite-alerts dashboard</title></head><body>"
-    "<main><h1>kite-alerts dashboard</h1>"
-    "<p>The dashboard assets are not present in this deployment. "
-    "Run <code>kite-alerts ui</code> locally to use the dashboard.</p>"
-    "</main></body></html>"
-)
-
-
-def load_index_html() -> str:
-    """Return the dashboard HTML, or an honest fallback if it was not bundled."""
-    try:
-        return INDEX_FILE.read_text(encoding="utf-8")
-    except OSError:
-        return _INDEX_FALLBACK
-
-
-MODE = (
-    "Read-only dashboard with a practice replay, a guided Kite connection and settings. "
-    "The live alert feed is started with `kite-alerts run`, not from here."
-)
-
-ALERTS_ONLY_STATEMENT = (
-    "This tool only sends alerts. It never places, modifies or cancels orders, "
-    "and it never touches your positions."
-)
-
-#: Exact attribution required by the vendored chart library (see its NOTICE).
-ATTRIBUTION = {
-    "name": "TradingView Lightweight Charts™",
-    "version": "5.0.9",
-    "license": "Apache-2.0",
-    "notice": (
-        "TradingView Lightweight Charts™\n"
-        "Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/"
-    ),
-    "homepage": "https://www.tradingview.com/",
-    "license_url": "/license",
-    "notice_url": "/notice",
-}
-
-FIRST_DAY_CHECKLIST = (
-    "Open Connect and create your own Kite Connect app at developers.kite.trade.",
-    "Copy this dashboard's redirect URL into that app's settings.",
-    "Paste your own API key and secret on Connect, then log in on Zerodha's page.",
-    "On Settings, choose the instruments you watch and enable Telegram or Slack.",
-    "Run `kite-alerts config-check` (or press Check settings) to confirm the file.",
-    "Run `kite-alerts run` in its own window; the dashboard only watches it.",
-    "Try the Practice page first: it needs no account and no internet.",
-)
-
-NO_SETTINGS_MESSAGE = (
-    "Your settings could not be read. The practice replay still works, but connecting, "
-    "saving and status need a valid .env."
-)
-
-
-class SettingsUpdate(BaseModel):
-    """A partial settings update, keyed by environment variable name."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    values: dict[str, Any] = Field(default_factory=dict)
-
-
-class ManualToken(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    request_token: str = ""
-    state: str = ""
-
-
-class WatchlistSymbol(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    source: str = "nse_delayed"
-    symbol: str = ""
+__all__ = [
+    "ALERTS_ONLY_STATEMENT",
+    "ATTRIBUTION",
+    "FIRST_DAY_CHECKLIST",
+    "INDEX_FILE",
+    "LICENSE_FILE",
+    "MODE",
+    "NOTICE_FILE",
+    "NO_SETTINGS_MESSAGE",
+    "STATIC_DIR",
+    "_INDEX_FALLBACK",
+    "SettingsUpdate",
+    "UiContext",
+    "_error",
+    "_ndjson",
+    "_practice_payload",
+    "_resolved_paths",
+    "build_context",
+    "create_app",
+    "load_index_html",
+]
 
 
 @dataclass
@@ -346,77 +287,6 @@ def build_context(
     )
 
 
-def _ndjson(timeline: DemoTimeline) -> Iterator[str]:
-    for event in timeline.events():
-        yield json.dumps(event, separators=(",", ":"), allow_nan=False) + "\n"
-
-
-def _error(status: int, message: str, code: str = "error") -> JSONResponse:
-    return JSONResponse({"ok": False, "code": code, "message": message}, status_code=status)
-
-
-def _practice_payload(timeline: DemoTimeline, version: str) -> dict[str, Any]:
-    alerts = []
-    for alert in timeline.alerts:
-        alerts.append(
-            {
-                "side": alert.side,
-                "ts": alert.ts,
-                "time": alert.chart_time,
-                "price": alert.price,
-                "reasons": list(alert.reasons),
-                "rules": [dict(rule) for rule in alert.rules],
-                "rules_agreed": [
-                    str(rule["label"]) for rule in alert.rules if rule["status"] == "agree"
-                ],
-            }
-        )
-    total = len(timeline.alerts)
-    message = (
-        f"With your saved settings, this practice day produces {total} alert(s): "
-        f"{timeline.sells} SELL and {timeline.buys} BUY. Nothing is saved."
-    )
-    return {
-        "ok": True,
-        "demo": True,
-        "label": "DEMO",
-        "version": version,
-        "symbol": timeline.symbol,
-        "counts": {
-            "buys": timeline.buys,
-            "sells": timeline.sells,
-            "total": total,
-        },
-        "alerts": alerts,
-        "message": message,
-    }
-
-
-def _resolved_paths(context: UiContext) -> dict[str, Any]:
-    """Absolute paths the dashboard actually uses (F14)."""
-    settings = context.settings
-    history_path = getattr(context.history, "path", None)
-    warnings: list[str] = []
-    if (
-        settings is not None
-        and history_path is not None
-        and Path(history_path) != Path(settings.db_path)
-    ):
-        warnings.append(
-            f"Dashboard reads {history_path} but .env configures {settings.db_path}; "
-            "they differ (check --db / env_file)."
-        )
-    return {
-        "env_file": str(context.env_file),
-        "history_db": str(history_path) if history_path is not None else None,
-        "settings_db": str(settings.db_path) if settings is not None else None,
-        "log_dir": str(settings.observability.log_dir) if settings is not None else None,
-        "cache_dir": str(settings.cache_dir) if settings is not None else None,
-        "watchlist": str(context.env_file.parent / "data" / "chart_watchlist.json"),
-        "warnings": warnings,
-    }
-
-
 def create_app(
     context: UiContext,
     *,
@@ -463,496 +333,13 @@ def create_app(
             errors.append(item)
         return JSONResponse({"detail": errors}, status_code=422)
 
-    def require_settings() -> Settings:
-        if context.settings is None:
-            raise HTTPException(status_code=503, detail=NO_SETTINGS_MESSAGE)
-        return context.settings
-
-    @app.get("/", include_in_schema=False)
-    def index(request: Request) -> Response:
-        token, issued = resolve_csrf(request)
-        html = load_index_html()
-        if "</head>" in html:
-            html = html.replace(
-                "</head>",
-                f'<meta name="kite-alerts-csrf" content="{token}">\n</head>',
-                1,
-            )
-        response = HTMLResponse(html, media_type="text/html; charset=utf-8")
-        if issued:
-            set_csrf_cookie(response, token)
-        return response
-
-    @app.get("/license", include_in_schema=False)
-    def license_text() -> FileResponse:
-        if not LICENSE_FILE.is_file():
-            raise HTTPException(status_code=404, detail="The licence file was not bundled.")
-        return FileResponse(LICENSE_FILE, media_type="text/plain; charset=utf-8")
-
-    @app.get("/notice", include_in_schema=False)
-    def notice_text() -> FileResponse:
-        if not NOTICE_FILE.is_file():
-            raise HTTPException(status_code=404, detail="The notice file was not bundled.")
-        return FileResponse(NOTICE_FILE, media_type="text/plain; charset=utf-8")
-
-    @app.get("/api/about")
-    def about(request: Request, response: Response) -> dict[str, Any]:
-        holidays = context.chart.holiday_summary() if context.chart is not None else None
-        settings = context.settings
-        token, issued = resolve_csrf(request)
-        if issued:
-            set_csrf_cookie(response, token)
-        payload = {
-            "version": context.version,
-            "mode": MODE,
-            "alerts_only": True,
-            "alerts_only_statement": ALERTS_ONLY_STATEMENT,
-            "checklist": list(FIRST_DAY_CHECKLIST),
-            "attribution": dict(ATTRIBUTION),
-            "settings_error": context.settings_error,
-            "kite_configured": bool(settings and settings.kite.api_key),
-            "token_present": bool(settings and settings.kite.token),
-            "holidays": holidays,
-            "simulate_kite": context.simulate_kite,
-            "demo": True,
-            "redirect_url": context.kite.redirect_url if context.kite else "",
-            "csrf_token": token,
-            "paths": _resolved_paths(context),
-        }
-        return payload
-
-    @app.get("/api/about.paths")
-    def about_paths() -> dict[str, Any]:
-        return _resolved_paths(context)
-
-    @app.get("/api/status")
-    def status() -> dict[str, Any]:
-        return {
-            "status": context.status.snapshot().as_dict(),
-            "today": context.history.today_counts(),
-            "version": context.version,
-            "mode": MODE,
-            "alerts_only": True,
-            "settings_error": context.settings_error,
-            "warnings": context.settings.warnings_list() if context.settings else [],
-        }
-
-    @app.get("/api/alerts/recent")
-    def recent(
-        limit: Annotated[int, Query(ge=1, le=100)] = 20,
-    ) -> dict[str, Any]:
-        return context.history.recent(limit=limit)
-
-    @app.get("/api/alerts/history")
-    def history(
-        symbol: Annotated[str | None, Query(max_length=40)] = None,
-        side: Annotated[str | None, Query(max_length=8)] = None,
-        page: Annotated[int, Query(ge=1)] = 1,
-        page_size: Annotated[int, Query(ge=1, le=100)] = 25,
-    ) -> dict[str, Any]:
-        try:
-            page_result = context.history.read_page(
-                symbol=symbol, side=side, page=page, page_size=page_size
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return page_result.as_dict()
-
-    @app.get("/api/demo/timeline")
-    def demo_timeline() -> dict[str, Any]:
-        return context.demo().payload()
-
-    @app.get("/api/demo/stream")
-    def demo_stream() -> StreamingResponse:
-        timeline = context.demo()
-        return StreamingResponse(
-            _ndjson(timeline),
-            media_type="application/x-ndjson",
-            headers={"Cache-Control": "no-store"},
-        )
-
-    @app.post("/api/test-alert")
-    def test_alert(request: Request) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        outcome = context.test_alerts.send()
-        payload = outcome.as_dict()
-        if outcome.retry_after > 0:
-            return JSONResponse(
-                payload,
-                status_code=429,
-                headers={"Retry-After": str(max(1, math.ceil(outcome.retry_after)))},
-            )
-        if context.settings is None:
-            return JSONResponse(payload, status_code=503)
-        return JSONResponse(payload)
-
-    # ------------------------------------------------------------------- settings
-    @app.get("/api/settings")
-    def get_settings() -> dict[str, Any]:
-        assert context.settings_store is not None
-        return settings_payload(
-            context.settings,
-            settings_error=context.settings_error,
-            env_file=str(context.settings_store.path),
-            connect=connect_payload(context.settings, settings_error=context.settings_error),
-        )
-
-    @app.put("/api/settings")
-    def put_settings(request: Request, update: SettingsUpdate) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        assert context.settings_store is not None
-        result = context.settings_store.save(update.values)
-        payload = result.as_dict()
-        if result.retry_after > 0:
-            return JSONResponse(
-                payload,
-                status_code=429,
-                headers={"Retry-After": str(max(1, math.ceil(result.retry_after)))},
-            )
-        if not result.ok:
-            return JSONResponse(payload, status_code=422 if result.errors else 400)
-        context.reload()
-        return JSONResponse(payload)
-
-    @app.post("/api/settings/check")
-    def check_settings(request: Request) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        assert context.settings_store is not None
-        result = context.settings_store.check()
-        payload = result.as_dict()
-        return JSONResponse(payload, status_code=200 if result.ok else 422)
-
-    # ----------------------------------------------------------------------- kite
-    @app.post("/api/kite/login")
-    def kite_login(request: Request) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        assert context.kite is not None
-        try:
-            start = context.kite.start()
-        except ConnectError as exc:
-            return _error(400, exc.message, exc.code)
-        response = JSONResponse(
-            {
-                "ok": True,
-                "start_url": start.start_url,
-                "redirect_url": start.redirect_url,
-                "expires_in": start.expires_in,
-                "message": (
-                    "Opening Zerodha's login page. Log in there — this app never sees your "
-                    "password or one-time code."
-                ),
-            }
-        )
-        response.set_cookie(
-            STATE_COOKIE,
-            start.state,
-            max_age=start.expires_in,
-            httponly=True,
-            samesite="lax",
-            path="/",
-        )
-        return response
-
-    @app.get("/kite/start", include_in_schema=False)
-    def kite_start() -> RedirectResponse:
-        assert context.kite is not None
-        target = context.kite.pending_login_url()
-        if target is None:
-            return RedirectResponse("/?connect=no_attempt#/connect", status_code=303)
-        return RedirectResponse(target, status_code=302)
-
-    def _failed_callback(code: str) -> RedirectResponse:
-        return RedirectResponse(f"/?connect={code}#/connect", status_code=303)
-
-    @app.get("/callback", include_in_schema=False)
-    def callback(
-        request: Request,
-        request_token: str = "",
-        state: str = "",
-        status: str = "",
-    ) -> RedirectResponse:
-        assert context.kite is not None
-        if status and status != "success":
-            context.kite.cancel_pending()
-            return _failed_callback("cancelled")
-        effective_state = state or request.cookies.get(STATE_COOKIE, "")
-        try:
-            context.kite.finish(request_token, effective_state)
-        except ConnectError as exc:
-            return _failed_callback(exc.code)
-        response = RedirectResponse("/?connect=connected#/connect", status_code=303)
-        response.delete_cookie(STATE_COOKIE, path="/")
-        return response
-
-    @app.post("/api/kite/manual-token")
-    def manual_token(request: Request, payload: ManualToken) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        assert context.kite is not None
-        effective_state = payload.state or request.cookies.get(STATE_COOKIE, "")
-        try:
-            result = context.kite.finish(payload.request_token, effective_state)
-        except ConnectError as exc:
-            return _error(400, exc.message, exc.code)
-        return JSONResponse(result.as_dict())
-
-    @app.get("/api/kite/session")
-    def kite_session() -> dict[str, Any]:
-        assert context.kite is not None
-        session = context.kite.session()
-        payload = session.as_dict()
-        payload["redirect_url"] = context.kite.redirect_url
-        payload["token_present"] = bool(context.settings and context.settings.kite.token)
-        payload["credentials"] = connect_payload(
-            context.settings, settings_error=context.settings_error
-        )
-        return payload
-
-    @app.post("/api/kite/disconnect")
-    def kite_disconnect(request: Request) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        assert context.kite is not None
-        return JSONResponse(context.kite.disconnect().as_dict())
-
-    @app.get("/api/data-sources")
-    def data_sources(refresh: bool = False) -> dict[str, Any]:
-        assert context.kite is not None
-        return context.kite.data_sources(force=refresh)
-
-    # ---------------------------------------------------------------------- chart
-    def chart_guard() -> None:
-        assert context.chart is not None
-        if not context.chart.allow_request():
-            raise HTTPException(
-                status_code=429,
-                detail="The chart is refreshing too often. Wait a few seconds and try again.",
-            )
-
-    def chart_failure(exc: ChartError) -> JSONResponse:
-        return _error(exc.status, exc.message, exc.code)
-
-    def _ensure_feed_for(source: str, symbol: str) -> None:
-        """Selecting a live symbol is what starts/extends the ticker (F1)."""
-        if source != "kite_live" or context.feed_controller is None:
-            return
-        spec = symbol.strip()
-        context.feed_controller.ensure_started([spec] if spec else None)
-
-    @app.get("/api/chart/symbols")
-    def chart_symbols(
-        source: Annotated[str, Query(max_length=32)] = "nse_delayed",
-        refresh: bool = False,
-    ) -> JSONResponse:
-        chart_guard()
-        assert context.chart is not None
-        if refresh:
-            context.chart.clear_caches()
-        try:
-            return JSONResponse(context.chart.symbols_payload(source))
-        except ChartError as exc:
-            return chart_failure(exc)
-
-    @app.get("/api/chart/candles")
-    def chart_candles(
-        source: Annotated[str, Query(max_length=32)] = "nse_delayed",
-        symbol: Annotated[str, Query(max_length=80)] = "NSE:RELIANCE",
-        interval: Annotated[int, Query(ge=1, le=15)] = 5,
-        limit: Annotated[int, Query(ge=10, le=600)] = 300,
-    ) -> JSONResponse:
-        chart_guard()
-        assert context.chart is not None
-        _ensure_feed_for(source, symbol)
-        try:
-            return JSONResponse(
-                context.chart.candles(
-                    source,
-                    symbol,
-                    interval=interval,
-                    limit=limit,
-                )
-            )
-        except ChartError as exc:
-            return chart_failure(exc)
-
-    @app.get("/api/chart/live")
-    def chart_live(
-        source: Annotated[str, Query(max_length=32)] = "nse_delayed",
-        symbol: Annotated[str, Query(max_length=80)] = "NSE:RELIANCE",
-        interval: Annotated[int, Query(ge=1, le=15)] = 1,
-    ) -> JSONResponse:
-        chart_guard()
-        assert context.chart is not None
-        _ensure_feed_for(source, symbol)
-        try:
-            return JSONResponse(context.chart.live(source, symbol, interval=interval))
-        except ChartError as exc:
-            return chart_failure(exc)
-
-    @app.get("/api/chart/clock")
-    def chart_clock() -> JSONResponse:
-        chart_guard()
-        assert context.chart is not None
-        return JSONResponse(context.chart.clock_payload())
-
-    @app.get("/api/chart/watchlist")
-    def chart_watchlist(
-        source: Annotated[str, Query(max_length=32)] = "nse_delayed",
-    ) -> JSONResponse:
-        chart_guard()
-        assert context.chart is not None
-        try:
-            return JSONResponse(context.chart.watchlist(source))
-        except ChartError as exc:
-            return chart_failure(exc)
-
-    @app.post("/api/chart/watchlist")
-    def chart_watchlist_add(request: Request, payload: WatchlistSymbol) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        chart_guard()
-        assert context.chart is not None
-        try:
-            return JSONResponse(context.chart.add_watchlist(payload.source, payload.symbol))
-        except ChartError as exc:
-            return chart_failure(exc)
-
-    @app.delete("/api/chart/watchlist")
-    def chart_watchlist_remove(request: Request, payload: WatchlistSymbol) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        chart_guard()
-        assert context.chart is not None
-        try:
-            return JSONResponse(context.chart.remove_watchlist(payload.source, payload.symbol))
-        except ChartError as exc:
-            return chart_failure(exc)
-
-    @app.get("/api/chart/stream")
-    async def chart_stream(
-        request: Request,
-        source: Annotated[str, Query(max_length=32)] = "kite_live",
-        symbol: Annotated[str, Query(max_length=80)] = "",
-        interval: Annotated[int, Query(ge=1, le=15)] = 1,
-    ) -> StreamingResponse:
-        chart_guard()
-        if source != "kite_live":
-            raise HTTPException(
-                status_code=422,
-                detail="Streaming is only supported for the live Kite feed.",
-            )
-        if context.feed is None:
-            raise HTTPException(status_code=503, detail="Live feed service is not available.")
-        _ensure_feed_for(source, symbol)
-
-        from .live_feed import SSEClient
-
-        client = SSEClient(symbol=symbol, interval=interval)
-        # Cap check and registration happen under one lock: two tabs opening
-        # together can no longer both pass a stale len() check.
-        if not context.feed.admit_sse_client(client):
-            raise HTTPException(
-                status_code=429,
-                detail="Too many concurrent stream connections. Try again later.",
-            )
-
-        async def event_generator() -> AsyncIterator[str]:
-            import asyncio
-            import time
-
-            try:
-                st = context.feed.status().as_dict()
-                yield f"event: status\ndata: {json.dumps(st)}\n\n"
-
-                last_heartbeat = time.monotonic()
-                while not await request.is_disconnected():
-                    # client.get() blocks; run it in a worker thread so the
-                    # event loop keeps serving every other request (F17).
-                    event = await asyncio.to_thread(client.get, 0.5)
-                    while event is not None:
-                        yield f"event: {event.event}\ndata: {json.dumps(event.data)}\n\n"
-                        event = client.get(timeout=0)
-                    now = time.monotonic()
-                    if now - last_heartbeat >= 15.0:
-                        last_heartbeat = now
-                        yield ": heartbeat\n\n"
-                    await asyncio.sleep(0)
-            finally:
-                context.feed.unregister_sse_client(client)
-                client.close()
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    @app.get("/api/chart/feed-status")
-    def chart_feed_status() -> JSONResponse:
-        chart_guard()
-        if context.feed is None:
-            return JSONResponse({"ok": False, "status": None, "is_simulated": False})
-        return JSONResponse(
-            {
-                "ok": True,
-                "status": context.feed.status().as_dict(),
-                "is_simulated": bool(
-                    context.simulate_kite or getattr(context.feed, "is_simulated", False)
-                ),
-            }
-        )
-
-    @app.post("/api/kite/simulate/disconnect")
-    def sim_disconnect(request: Request) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        if not context.simulate_kite or context.simulator is None:
-            raise HTTPException(status_code=400, detail="Simulator mode is not active.")
-        context.simulator.trigger_disconnect()
-        return JSONResponse({"ok": True, "action": "disconnect"})
-
-    @app.post("/api/kite/simulate/token-expiry")
-    def sim_token_expiry(request: Request) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        if not context.simulate_kite or context.simulator is None:
-            raise HTTPException(status_code=400, detail="Simulator mode is not active.")
-        context.simulator.trigger_token_expiry()
-        return JSONResponse({"ok": True, "action": "token_expiry"})
-
-    @app.post("/api/kite/simulate/reconnect")
-    def sim_reconnect(request: Request) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        if not context.simulate_kite or context.simulator is None:
-            raise HTTPException(status_code=400, detail="Simulator mode is not active.")
-        context.simulator.trigger_reconnect()
-        return JSONResponse({"ok": True, "action": "reconnect"})
-
-    # -------------------------------------------------------------- notifications
-    @app.post("/api/notifications/telegram/chat-id")
-    def telegram_chat_id(request: Request) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        assert context.telegram is not None
-        return JSONResponse(context.telegram.find_chat_id().as_dict())
-
-    # ------------------------------------------------------------------- practice
-    @app.post("/api/practice/check")
-    def practice_check(request: Request) -> JSONResponse:
-        require_same_origin(request)
-        require_csrf_token(request)
-        if context.settings is None:
-            return _error(503, NO_SETTINGS_MESSAGE, "no_settings")
-        timeline = build_demo_timeline_for(context.settings.params)
-        return JSONResponse(_practice_payload(timeline, context.version))
+    app.include_router(dashboard_router())
+    app.include_router(overview_router(context))
+    app.include_router(alerts_router(context))
+    app.include_router(settings_router(context))
+    app.include_router(kite_router(context))
+    app.include_router(notifications_router(context))
+    app.include_router(chart_router(context))
+    app.include_router(practice_router(context))
 
     return app
